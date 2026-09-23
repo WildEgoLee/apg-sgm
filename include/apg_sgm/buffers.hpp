@@ -103,6 +103,7 @@ struct PipelineBuffers {
     CostVolume cost_right;
     Image32f disparity;
     Image32f d_before_refine;
+    Image32f d_after_refine;
     Image32f disparity_right;
     Image32f confidence;
     Image8u1 invalid_reason;

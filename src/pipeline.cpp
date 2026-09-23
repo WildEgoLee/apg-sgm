@@ -139,6 +139,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
 
     out.d_before_refine = out.disparity;
     refiner.refine(cfg_, out);
+    out.d_after_refine = out.disparity;
     const auto t9 = time_now();
 
     post.left_right_check(cfg_, out);
@@ -168,7 +169,8 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         const int n_pixels = w * h;
         double sum_width = 0.0;
         size_t reliable = 0;
-        size_t refined = 0;
+        size_t unreliable = 0;
+        size_t refine_changed = 0;
         size_t lr_fail = 0;
 
         for (int y = 0; y < h; ++y) {
@@ -180,8 +182,17 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
                 if (!out.reliable_mask.empty() && out.reliable_mask.at(x, y)) {
                     ++reliable;
                 } else {
-                    ++refined;
+                    ++unreliable;
                 }
+
+                if (!out.d_before_refine.empty() && !out.d_after_refine.empty()) {
+                    const float db = out.d_before_refine.at(x, y);
+                    const float da = out.d_after_refine.at(x, y);
+                    if (db >= 0.0f && da >= 0.0f && std::abs(da - db) > 1e-4f) {
+                        ++refine_changed;
+                    }
+                }
+
                 if (!out.invalid_reason.empty()) {
                     auto r = static_cast<InvalidReason>(out.invalid_reason.at(x, y));
                     if (r == InvalidReason::Mismatch || r == InvalidReason::Occlusion) {
@@ -196,8 +207,16 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         stats->mean_search_width = n_pixels > 0 ? (sum_width / n_pixels) : 0.0;
         stats->search_reduction_ratio = global_D > 0 ? (1.0 - stats->mean_search_width / global_D) : 0.0;
         stats->reliable_pixels = reliable;
-        stats->refined_pixels = refined;
+        stats->unreliable_pixels = unreliable;
+        stats->refine_changed_pixels = refine_changed;
         stats->lr_fail_pixels = lr_fail;
+
+        if (n_pixels > 0) {
+            stats->reliable_ratio = static_cast<float>(reliable) / n_pixels;
+            stats->unreliable_ratio = static_cast<float>(unreliable) / n_pixels;
+            stats->refine_changed_ratio = static_cast<float>(refine_changed) / n_pixels;
+            stats->lr_fail_ratio = static_cast<float>(lr_fail) / n_pixels;
+        }
     }
 
     return true;

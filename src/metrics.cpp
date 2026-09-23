@@ -1,7 +1,7 @@
 #include "apg_sgm/metrics.hpp"
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 
 namespace apg {
 
@@ -10,6 +10,7 @@ StereoMetrics evaluate_stereo(
     const Image32f& gt,
     const SearchRange* range,
     const Image32f* d_before_refine,
+    const Image32f* d_after_refine,
     float max_valid_gt) {
 
     StereoMetrics m;
@@ -61,11 +62,22 @@ StereoMetrics evaluate_stereo(
     double sum_edge_epe = 0.0;
     double sum_nonedge_epe = 0.0;
 
-    double sum_before_epe = 0.0;
+    // Refinement counters (strict apples-to-apples evaluation on identical pixel sets)
+    double sum_before_err = 0.0;
+    double sum_after_err = 0.0;
     int refine_eval_count = 0;
     int refine_improved = 0;
     int refine_worsened = 0;
     int refine_unchanged = 0;
+    int refine_changed = 0;
+
+    double sum_total_before = 0.0;
+    double sum_total_after = 0.0;
+    double sum_total_final = 0.0;
+    int total_eval_count = 0;
+
+    const bool has_refine_data = (d_before_refine && !d_before_refine->empty() &&
+                                  d_after_refine && !d_after_refine->empty());
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
@@ -79,7 +91,8 @@ StereoMetrics evaluate_stereo(
             if (range) {
                 const int dmin = range->dmin.at(x, y);
                 const int dmax = range->dmax.at(x, y);
-                if (g >= static_cast<float>(dmin) && g <= static_cast<float>(dmax)) {
+                // Strict half-open interval [dmin, dmax)
+                if (g >= static_cast<float>(dmin) && g < static_cast<float>(dmax)) {
                     range_in_count++;
                 }
             }
@@ -87,40 +100,53 @@ StereoMetrics evaluate_stereo(
             const float e = est.at(x, y);
             if (!std::isfinite(e) || e < 0.0f) {
                 lr_fail_count++;
-                continue;
-            }
-
-            m.valid_pixels++;
-            const float diff = std::abs(e - g);
-            sum_epe += diff;
-
-            if (diff > 0.5f) count_0_5++;
-            if (diff > 1.0f) count_1_0++;
-            if (diff > 2.0f) count_2_0++;
-            if (diff > 3.0f) count_3_0++;
-
-            const bool edge = (is_edge[static_cast<size_t>(y) * w + x] != 0);
-            if (edge) {
-                m.edge_pixels++;
-                sum_edge_epe += diff;
             } else {
-                m.nonedge_pixels++;
-                sum_nonedge_epe += diff;
+                m.valid_pixels++;
+                const float diff = std::abs(e - g);
+                sum_epe += diff;
+
+                if (diff > 0.5f) count_0_5++;
+                if (diff > 1.0f) count_1_0++;
+                if (diff > 2.0f) count_2_0++;
+                if (diff > 3.0f) count_3_0++;
+
+                const bool edge = (is_edge[static_cast<size_t>(y) * w + x] != 0);
+                if (edge) {
+                    m.edge_pixels++;
+                    sum_edge_epe += diff;
+                } else {
+                    m.nonedge_pixels++;
+                    sum_nonedge_epe += diff;
+                }
             }
 
-            if (d_before_refine && !d_before_refine->empty()) {
+            if (has_refine_data) {
                 const float eb = d_before_refine->at(x, y);
-                if (std::isfinite(eb) && eb >= 0.0f) {
+                const float ea = d_after_refine->at(x, y);
+                if (std::isfinite(eb) && eb >= 0.0f && std::isfinite(ea) && ea >= 0.0f) {
                     refine_eval_count++;
                     const float diff_b = std::abs(eb - g);
-                    sum_before_epe += diff_b;
+                    const float diff_a = std::abs(ea - g);
+                    sum_before_err += diff_b;
+                    sum_after_err += diff_a;
 
-                    if (diff < diff_b - 1e-4f) {
+                    if (diff_a < diff_b - 1e-4f) {
                         refine_improved++;
-                    } else if (diff > diff_b + 1e-4f) {
+                    } else if (diff_a > diff_b + 1e-4f) {
                         refine_worsened++;
                     } else {
                         refine_unchanged++;
+                    }
+
+                    if (std::abs(ea - eb) > 1e-4f) {
+                        refine_changed++;
+                    }
+
+                    if (std::isfinite(e) && e >= 0.0f) {
+                        total_eval_count++;
+                        sum_total_before += diff_b;
+                        sum_total_after += diff_a;
+                        sum_total_final += std::abs(e - g);
                     }
                 }
             }
@@ -150,13 +176,19 @@ StereoMetrics evaluate_stereo(
         m.nonedge_epe = static_cast<float>(sum_nonedge_epe / m.nonedge_pixels);
     }
 
-    if (d_before_refine && !d_before_refine->empty() && refine_eval_count > 0) {
+    if (refine_eval_count > 0) {
         m.has_refine_stats = true;
-        const float before_epe = static_cast<float>(sum_before_epe / refine_eval_count);
-        m.refine_epe_delta = m.epe - before_epe;
+        m.refine_eval_pixels = refine_eval_count;
+        m.refine_epe_delta = static_cast<float>((sum_after_err - sum_before_err) / refine_eval_count);
         m.refine_improved_ratio = static_cast<float>(refine_improved) / static_cast<float>(refine_eval_count);
         m.refine_worsened_ratio = static_cast<float>(refine_worsened) / static_cast<float>(refine_eval_count);
         m.refine_unchanged_ratio = static_cast<float>(refine_unchanged) / static_cast<float>(refine_eval_count);
+        m.refine_changed_ratio = static_cast<float>(refine_changed) / static_cast<float>(refine_eval_count);
+    }
+
+    if (total_eval_count > 0) {
+        m.post_epe_delta = static_cast<float>((sum_total_final - sum_total_after) / total_eval_count);
+        m.total_epe_delta = static_cast<float>((sum_total_final - sum_total_before) / total_eval_count);
     }
 
     return m;

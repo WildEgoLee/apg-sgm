@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Dataset preparation and synthetic benchmark generator for apg-sgm.
 
-This script can:
-1. Generate synthetic benchmark stereo pairs with ground truth PFM (no external dependencies required).
-2. Generate manifest files for Middlebury 2014 and KITTI 2015 datasets.
+This script generates synthetic benchmark stereo pairs with ground truth PFM
+using physically correct left-to-right forward warping with z-buffering:
+    x_R = x_L - d_{gt}(x_L, y)
+    I_R(x_R, y) <- I_L(x_L, y)
 """
 
 import argparse
@@ -31,55 +32,75 @@ def write_pfm(path: Path, width: int, height: int, data: list):
             f.write(struct.pack(f"<{len(row)}f", *row))
 
 
-def generate_synthetic_scene(out_dir: Path, name: str, width: int = 160, height: int = 120, max_d: int = 32):
-    """Generates a textured synthetic scene with planar ramps and foreground blocks."""
+def generate_synthetic_scene(out_dir: Path, name: str, width: int, height: int, scene_type: str, dmax: int = 32):
+    """Generates a textured synthetic scene with exact left-to-right forward warping and z-buffering.
+
+    Left reference frame:
+        x_R = x_L - d
+        Larger d corresponds to closer foreground objects (retained in z-buffer).
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     gt = [0.0] * (width * height)
     left_pix = bytearray(width * height)
-    right_pix = bytearray(width * height)
+    right_pix = bytearray([128] * (width * height))
+    z_buf = [-1.0] * (width * height)
 
     for y in range(height):
         for x in range(width):
-            # Background slanted ground plane: disp 4 to 12
-            d = 4.0 + 8.0 * (y / max(1, height - 1))
+            if scene_type == "constant":
+                # Constant disparity plane
+                d = 8
+            elif scene_type == "blocks":
+                # Multi-plane depth steps: background 6, middle block 16, tall pillar 22
+                d = 6
+                if 35 <= y <= 75 and 45 <= x <= 95:
+                    d = 16
+                elif 20 <= y <= 90 and 115 <= x <= 130:
+                    d = 22
+            elif scene_type == "slanted":
+                # Slanted ground ramp (integer steps) + elevated blocks
+                d = 6 + int(12.0 * y / max(1, height - 1))
+                if 40 <= y <= 110 and 60 <= x <= 130:
+                    d = 26
+                elif 30 <= y <= 130 and 160 <= x <= 190:
+                    d = 34
+            else:
+                d = 8
 
-            # Foreground square block: disp 20
-            if 35 <= y <= 75 and 45 <= x <= 95:
-                d = 20.0
+            gt[y * width + x] = float(d)
 
-            # Elevated thin pillar: disp 26
-            if 20 <= y <= 90 and 115 <= x <= 130:
-                d = 26.0
-
-            gt[y * width + x] = d
-
-            # High frequency pseudo-random textured pattern
+            # High-frequency textured pattern for robust census & gradient matching
             val = (
                 128.0
-                + 50.0 * math.sin(x * 0.35)
-                + 35.0 * math.cos(y * 0.45)
-                + 30.0 * math.sin((x * 13 + y * 7) * 0.1)
-                + ((x * 37 + y * 19) % 31)
+                + 48.0 * math.sin(x * 0.37)
+                + 38.0 * math.cos(y * 0.43)
+                + 32.0 * math.sin((x * 17 + y * 11) * 0.13)
+                + ((x * 41 + y * 23) % 29)
             )
-            val = max(0, min(255, int(val)))
-            left_pix[y * width + x] = val
+            left_pix[y * width + x] = max(0, min(255, int(val)))
 
-    # Right image sampled by shifting left by disparity
+    # Forward warp from left to right with z-buffer (x_R = x_L - d)
     for y in range(height):
-        for x in range(width):
-            d = gt[y * width + x]
-            src_x = x - d
-            if 0 <= src_x < width - 1:
-                x0 = int(src_x)
-                x1 = x0 + 1
-                alpha = src_x - x0
-                v0 = left_pix[y * width + x0]
-                v1 = left_pix[y * width + x1]
-                right_pix[y * width + x] = int((1.0 - alpha) * v0 + alpha * v1 + 0.5)
-            elif 0 <= src_x < width:
-                right_pix[y * width + x] = left_pix[y * width + int(src_x)]
-            else:
-                right_pix[y * width + x] = 128
+        for xl in range(width):
+            d_val = gt[y * width + xl]
+            d_int = int(round(d_val))
+            xr = xl - d_int
+            if 0 <= xr < width:
+                # Retain surface closer to camera (larger disparity)
+                if d_val > z_buf[y * width + xr]:
+                    z_buf[y * width + xr] = d_val
+                    right_pix[y * width + xr] = left_pix[y * width + xl]
+
+    # For disoccluded / unmapped pixels in right image, synthesize background texture
+    for y in range(height):
+        for xr in range(width):
+            if z_buf[y * width + xr] < 0:
+                bg_val = (
+                    110.0
+                    + 40.0 * math.sin(xr * 0.37)
+                    + 30.0 * math.cos(y * 0.43)
+                )
+                right_pix[y * width + xr] = max(0, min(255, int(bg_val)))
 
     left_path = out_dir / f"{name}_left.pgm"
     right_path = out_dir / f"{name}_right.pgm"
@@ -104,8 +125,9 @@ def main():
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
     cases = [
-        ("synth_blocks", 160, 120, 32),
-        ("synth_large", 240, 160, 48),
+        ("synth_plane", 160, 120, "constant", 32),
+        ("synth_blocks", 160, 120, "blocks", 32),
+        ("synth_slanted", 240, 160, "slanted", 48),
     ]
 
     manifest_lines = [
@@ -113,10 +135,9 @@ def main():
         "# Format: case_name left_img right_img gt_disp [dmax] [dmin]",
     ]
 
-    for name, w, h, dmax in cases:
-        print(f"Generating synthetic scene: {name} ({w}x{h}, dmax={dmax})...")
-        lp, rp, gp = generate_synthetic_scene(out_dir, name, w, h, dmax)
-        # Relative path from manifest directory
+    for name, w, h, stype, dmax in cases:
+        print(f"Generating synthetic scene: {name} ({w}x{h}, {stype}, dmax={dmax})...")
+        lp, rp, gp = generate_synthetic_scene(out_dir, name, w, h, stype, dmax)
         rel_lp = os.path.relpath(lp, manifest_path.parent).replace("\\", "/")
         rel_rp = os.path.relpath(rp, manifest_path.parent).replace("\\", "/")
         rel_gp = os.path.relpath(gp, manifest_path.parent).replace("\\", "/")

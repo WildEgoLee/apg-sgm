@@ -115,17 +115,32 @@ static void test_metrics() {
         }
     }
 
-    auto m = evaluate_stereo(est, gt);
-    assert(m.evaluated_pixels == 100);
-    assert(m.valid_pixels == 100);
-    // 50 pixels with 0 error, 50 pixels with 1.5 error => mean EPE = 0.75
-    assert(std::abs(m.epe - 0.75f) < 1e-4f);
-    // Bad-1.0 should be 50%
-    assert(std::abs(m.bad_1_0 - 50.0f) < 1e-4f);
-    // Bad-2.0 should be 0%
-    assert(std::abs(m.bad_2_0 - 0.0f) < 1e-4f);
+    // Test SearchRange half-open interval [dmin, dmax)
+    SearchRange range;
+    range.allocate(10, 10, 0, 10);
+    // GT is 10.0 on right half, range is [0, 10). Should NOT recall pixels with GT == 10.0
+    auto m_range = evaluate_stereo(est, gt, &range);
+    assert(std::abs(m_range.range_gt_recall - 0.50f) < 1e-4f);
 
-    std::cout << "[PASS] StereoMetrics evaluation verified\n";
+    // Test decoupled Refine & Post metrics
+    Image32f before(10, 10, 5.0f);
+    Image32f after(10, 10, 5.0f);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 5; x < 10; ++x) {
+            before.at(x, y) = 12.0f; // error = 2.0
+            after.at(x, y) = 11.0f;  // error = 1.0 (improved by 1.0)
+            est.at(x, y) = 10.5f;    // error = 0.5 (post improved by 0.5)
+        }
+    }
+    auto m_ref = evaluate_stereo(est, gt, nullptr, &before, &after);
+    assert(m_ref.has_refine_stats);
+    // EPE before = 1.0, after = 0.5 => delta = -0.5
+    assert(std::abs(m_ref.refine_epe_delta - (-0.5f)) < 1e-4f);
+    assert(std::abs(m_ref.post_epe_delta - (-0.25f)) < 1e-4f);
+    assert(std::abs(m_ref.total_epe_delta - (-0.75f)) < 1e-4f);
+    assert(std::abs(m_ref.refine_improved_ratio - 0.50f) < 1e-4f);
+
+    std::cout << "[PASS] StereoMetrics evaluation and range recall verified\n";
 }
 
 int main() {

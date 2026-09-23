@@ -159,8 +159,9 @@ int main(int argc, char** argv) {
 
     csv << "case,ablation_id,ablation_name,cost,cross,p2,prior,refine,paths,w,h,dmax,"
         << "epe,bad_0_5,bad_1_0,bad_2_0,bad_3_0,valid_ratio,lr_fail_ratio,edge_epe,nonedge_epe,range_recall,"
-        << "time_total_ms,time_cost_ms,time_cross_ms,time_sgm_ms,time_prior_ms,time_refine_ms,"
-        << "refine_epe_delta,refine_improved_pct\n";
+        << "prior_supports,mean_search_width,search_reduction_ratio,cost_bytes,cost32_bytes,peak_bytes,"
+        << "reliable_ratio,unreliable_ratio,refine_changed_ratio,refine_epe_delta,post_epe_delta,total_epe_delta,"
+        << "time_total_ms,time_cost_ms,time_cross_ms,time_sgm_ms,time_prior_ms,time_refine_ms,time_post_ms\n";
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
@@ -231,7 +232,8 @@ int main(int argc, char** argv) {
             if (has_gt) {
                 const apg::SearchRange* range_ptr = cfg.prior.enable ? &best_sample.bufs.range : nullptr;
                 const apg::Image32f* before_refine_ptr = cfg.refine.enable ? &best_sample.bufs.d_before_refine : nullptr;
-                m = apg::evaluate_stereo(best_sample.bufs.disparity, gt_disp, range_ptr, before_refine_ptr, static_cast<float>(c.dmax));
+                const apg::Image32f* after_refine_ptr = cfg.refine.enable ? &best_sample.bufs.d_after_refine : nullptr;
+                m = apg::evaluate_stereo(best_sample.bufs.disparity, gt_disp, range_ptr, before_refine_ptr, after_refine_ptr, static_cast<float>(c.dmax));
             }
 
             std::string id_str = apg::ablation_id_to_string(aid);
@@ -247,6 +249,8 @@ int main(int argc, char** argv) {
             std::cout << "[" << id_str << "] " << std::setw(32) << std::left << desc_str
                       << " | EPE: " << std::setw(6) << std::fixed << std::setprecision(3) << (has_gt ? m.epe : -1.f)
                       << " | Bad2.0: " << std::setw(5) << std::setprecision(1) << (has_gt ? m.bad_2_0 : -1.f) << "%"
+                      << " | D_bar: " << std::setw(5) << std::setprecision(1) << best_sample.stats.mean_search_width
+                      << " | Recall: " << std::setw(5) << std::setprecision(1) << (m.range_gt_recall * 100.0f) << "%"
                       << " | Time: " << std::setw(6) << std::setprecision(2) << best_sample.total_ms << " ms"
                       << " (SGM: " << std::setprecision(2) << best_sample.stats.timing.sgm_ms << " ms)"
                       << std::endl;
@@ -275,6 +279,20 @@ int main(int argc, char** argv) {
                 << (has_gt ? m.edge_epe : 0.f) << ","
                 << (has_gt ? m.nonedge_epe : 0.f) << ","
                 << (has_gt ? m.range_gt_recall : 0.f) << ","
+                << best_sample.stats.prior_support_count << ","
+                << std::setprecision(2)
+                << best_sample.stats.mean_search_width << ","
+                << std::setprecision(4)
+                << best_sample.stats.search_reduction_ratio << ","
+                << best_sample.stats.cost_bytes << ","
+                << best_sample.stats.aggregated_cost_bytes << ","
+                << best_sample.stats.estimated_peak_bytes << ","
+                << best_sample.stats.reliable_ratio << ","
+                << best_sample.stats.unreliable_ratio << ","
+                << (m.has_refine_stats ? m.refine_changed_ratio : 0.f) << ","
+                << (m.has_refine_stats ? m.refine_epe_delta : 0.f) << ","
+                << (m.has_refine_stats ? m.post_epe_delta : 0.f) << ","
+                << (m.has_refine_stats ? m.total_epe_delta : 0.f) << ","
                 << std::setprecision(2)
                 << best_sample.total_ms << ","
                 << best_sample.stats.timing.cost_ms << ","
@@ -282,9 +300,7 @@ int main(int argc, char** argv) {
                 << best_sample.stats.timing.sgm_ms << ","
                 << best_sample.stats.timing.prior_ms << ","
                 << best_sample.stats.timing.refine_ms << ","
-                << std::setprecision(4)
-                << (m.has_refine_stats ? m.refine_epe_delta : 0.f) << ","
-                << (m.has_refine_stats ? m.refine_improved_ratio * 100.0f : 0.f) << "\n";
+                << best_sample.stats.timing.post_ms << "\n";
             csv.flush();
 
             // Save disparity maps if requested

@@ -30,8 +30,14 @@ struct PipelineStats {
     double search_reduction_ratio = 0.0;
 
     size_t reliable_pixels = 0;
-    size_t refined_pixels = 0;
+    size_t unreliable_pixels = 0;
+    size_t refine_changed_pixels = 0;
     size_t lr_fail_pixels = 0;
+
+    float reliable_ratio = 0.0f;
+    float unreliable_ratio = 0.0f;
+    float refine_changed_ratio = 0.0f;
+    float lr_fail_ratio = 0.0f;
 };
 
 } // namespace apg

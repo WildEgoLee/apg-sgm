@@ -1,7 +1,9 @@
-#include "apg_sgm/pipeline.hpp"
-#include "apg_sgm/sgm_optimizer.hpp"
+#include "apg_sgm/ablation.hpp"
 #include "apg_sgm/cost_computer.hpp"
+#include "apg_sgm/metrics.hpp"
+#include "apg_sgm/pipeline.hpp"
 #include "apg_sgm/prior_estimator.hpp"
+#include "apg_sgm/sgm_optimizer.hpp"
 
 #include <cmath>
 #include <iostream>
@@ -379,6 +381,60 @@ int main() {
         if (!ok) return 1;
     }
 
-    std::cout << "\n>>> ALL 7 SYNTHETIC REGRESSION TESTS PASSED! <<<\n";
+    // -------------------------------------------------------------
+    // Test 7: Constant Disparity Baseline-A Accuracy Gate (CI Gate)
+    // -------------------------------------------------------------
+    {
+        std::cout << "\n[Test 7] Constant Disparity Baseline-A Accuracy Gate (CI Gate)...\n";
+        const int W = 160, H = 120, D_GT = 8, DMAX = 32;
+        Image8 left(W, H, 1);
+        Image8 right(W, H, 1);
+        Image32f gt(W, H, static_cast<float>(D_GT));
+
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                left.at(x, y) = rich_texture(x, y);
+            }
+        }
+        // Physically correct left-to-right forward warp: xr = xl - d
+        for (int y = 0; y < H; ++y) {
+            for (int xl = 0; xl < W; ++xl) {
+                const int xr = xl - D_GT;
+                if (xr >= 0 && xr < W) {
+                    right.at(xr, y) = left.at(xl, y);
+                }
+            }
+        }
+
+        // Run Baseline A (Census + 4SGM)
+        auto cfgA = make_ablation_config(AblationId::A_Census4, DMAX);
+        StereoMatcher matcher(cfgA);
+        PipelineBuffers bufs;
+        if (!matcher.compute(left, right, bufs)) {
+            std::cerr << "  FAILED: matcher compute failed: " << matcher.last_error() << "\n";
+            return 1;
+        }
+
+        auto m = evaluate_stereo(bufs.disparity, gt, nullptr, nullptr, nullptr, static_cast<float>(DMAX));
+        std::cout << "  Baseline A on Constant Plane: EPE=" << m.epe
+                  << " px, Bad-1.0=" << m.bad_1_0 << "%, Valid Ratio=" << (m.valid_ratio * 100.0f) << "%\n";
+
+        // Assert accuracy gate
+        if (m.epe > 0.5f) {
+            std::cerr << "  FAILED: EPE " << m.epe << " exceeds accuracy threshold 0.5 px!\n";
+            return 1;
+        }
+        if (m.bad_1_0 > 2.0f) {
+            std::cerr << "  FAILED: Bad-1.0 " << m.bad_1_0 << "% exceeds accuracy threshold 2.0%!\n";
+            return 1;
+        }
+        if (m.valid_ratio < 0.85f) {
+            std::cerr << "  FAILED: Valid ratio " << m.valid_ratio << " is too low!\n";
+            return 1;
+        }
+        std::cout << "  PASSED (Accuracy Gate satisfied: EPE < 0.5 px, Bad-1.0 < 2.0%)\n";
+    }
+
+    std::cout << "\n>>> ALL 8 SYNTHETIC REGRESSION TESTS PASSED! <<<\n";
     return 0;
 }
