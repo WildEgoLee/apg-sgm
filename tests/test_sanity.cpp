@@ -93,13 +93,44 @@ int main() {
     PackedCostVolume16 packed_cost(shared_layout, kInvalidCost);
     PackedCostVolume32 packed_cost32(shared_layout, 0);
 
-    // Verify both volumes share identical layout pointer
-    if (packed_cost.layout() != packed_cost32.layout()) {
+    // Verify both volumes share identical layout pointer before compute
+    if (packed_cost.layout() != packed_cost32.layout() || packed_cost.layout() != shared_layout) {
         std::cerr << "Error: layout is not shared between packed_cost and packed_cost32!\n";
         return 1;
     }
 
     cc.compute_volume_packed(cfg_hq, buf_packed, packed_cost);
+
+    // Verify layout was preserved and NOT re-allocated during compute_volume_packed
+    if (packed_cost.layout() != shared_layout) {
+        std::cerr << "Error: compute_volume_packed re-allocated layout instead of preserving shared_layout!\n";
+        return 1;
+    }
+    if (shared_layout.use_count() < 3) {
+        std::cerr << "Error: shared_layout use_count is " << shared_layout.use_count() << ", expected >= 3\n";
+        return 1;
+    }
+
+    // Snapshot immutability regression: modifying external SearchRange must not alter layout
+    const int16_t orig_dmin0 = shared_layout->dmin[0];
+    buf_packed.range.dmin.at(0, 0) += 7;
+    if (shared_layout->dmin[0] != orig_dmin0) {
+        std::cerr << "Error: mutating SearchRange affected immutable PackedVolumeLayout!\n";
+        return 1;
+    }
+    buf_packed.range.dmin.at(0, 0) -= 7; // restore
+
+    // Copy / Move layout preservation checks
+    PackedCostVolume16 copy_vol = packed_cost;
+    if (copy_vol.layout() != shared_layout) {
+        std::cerr << "Error: copy_vol does not share layout!\n";
+        return 1;
+    }
+    PackedCostVolume16 moved_vol = std::move(copy_vol);
+    if (moved_vol.layout() != shared_layout) {
+        std::cerr << "Error: moved_vol does not share layout!\n";
+        return 1;
+    }
 
     const int w = left.width();
     const int h = left.height();
@@ -107,8 +138,8 @@ int main() {
 
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            const int lo = buf_packed.range.dmin.at(x, y);
-            const int hi = buf_packed.range.dmax.at(x, y);
+            const int lo = packed_cost.dmin(x, y);
+            const int hi = packed_cost.dmax(x, y);
             const uint16_t* p_slice = packed_cost.slice(x, y);
 
             for (int d = lo; d < hi; ++d) {

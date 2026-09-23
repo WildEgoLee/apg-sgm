@@ -42,7 +42,7 @@ SupportMetrics evaluate_supports(
     int total_vis_cells = 0;
     for (uint8_t c : cell_has_vis_gt) total_vis_cells += c;
 
-    std::vector<uint8_t> cell_has_correct_support(n_cells, 0);
+    std::vector<uint8_t> cell_has_correct_vis_support(n_cells, 0);
     double sum_abs_err = 0.0;
     double sum_vis_abs_err = 0.0;
 
@@ -67,11 +67,13 @@ SupportMetrics evaluate_supports(
         }
         if (err <= 1.0f) {
             sm.correct_1++;
-            if (is_visible) sm.visible_correct_1++;
-            const int gx = s.x / cell_size;
-            const int gy = s.y / cell_size;
-            if (gx < gw && gy < gh) {
-                cell_has_correct_support[gy * gw + gx] = 1;
+            if (is_visible) {
+                sm.visible_correct_1++;
+                const int gx = s.x / cell_size;
+                const int gy = s.y / cell_size;
+                if (gx < gw && gy < gh) {
+                    cell_has_correct_vis_support[gy * gw + gx] = 1;
+                }
             }
         }
         if (err <= 2.0f) {
@@ -100,13 +102,14 @@ SupportMetrics evaluate_supports(
 
     int correct_cells = 0;
     for (int i = 0; i < n_cells; ++i) {
-        if (cell_has_vis_gt[i] && cell_has_correct_support[i]) {
+        if (cell_has_vis_gt[i] && cell_has_correct_vis_support[i]) {
             correct_cells++;
         }
     }
     if (total_vis_cells > 0) {
         sm.grid_recall_1 = static_cast<float>(correct_cells) / static_cast<float>(total_vis_cells);
         sm.grid_coverage = sm.grid_recall_1;
+        sm.support_grid_recall_vis_1 = sm.grid_recall_1;
     }
     return sm;
 }

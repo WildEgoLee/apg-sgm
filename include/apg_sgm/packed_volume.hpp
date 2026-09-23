@@ -88,6 +88,10 @@ public:
         allocate(PackedVolumeLayout::from_range(range), fill);
     }
 
+    void fill(T value) {
+        std::fill(data_.begin(), data_.end(), value);
+    }
+
     std::shared_ptr<const PackedVolumeLayout> layout() const { return layout_; }
 
     int width() const { return layout_ ? layout_->width : 0; }

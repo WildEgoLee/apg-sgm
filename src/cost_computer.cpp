@@ -189,7 +189,11 @@ void CostComputer::compute_volume_packed(const PipelineConfig& cfg,
                                          PackedCostVolume16& packed_cost) const {
     const int w = buf.left_gray.width();
     const int h = buf.left_gray.height();
-    packed_cost.allocate(buf.range, kInvalidCost);
+    if (!packed_cost.layout() || packed_cost.width() != w || packed_cost.height() != h) {
+        packed_cost.allocate(buf.range, kInvalidCost);
+    } else {
+        packed_cost.fill(kInvalidCost);
+    }
 
     const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
     const bool use_ad = cfg.cost.use_ad;
@@ -207,8 +211,8 @@ void CostComputer::compute_volume_packed(const PipelineConfig& cfg,
 #endif
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            const int lo = buf.range.dmin.at(x, y);
-            const int hi = buf.range.dmax.at(x, y);
+            const int lo = packed_cost.dmin(x, y);
+            const int hi = packed_cost.dmax(x, y);
             const int D_p = (hi > lo) ? (hi - lo) : 0;
             if (D_p <= 0) continue;
 

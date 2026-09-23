@@ -35,8 +35,9 @@ struct SupportMetrics {
     float mae_all = 0.0f;
     float mae_visible = 0.0f;
 
-    float grid_recall_1 = 0.0f; // fraction of visible GT cells with >=1 correct (<=1.0px) support
+    float grid_recall_1 = 0.0f; // fraction of visible GT cells with >=1 correct (<=1.0px) visible support
     float grid_coverage = 0.0f; // alias for grid_recall_1
+    float support_grid_recall_vis_1 = 0.0f; // alias for grid_recall_1
 };
 
 struct StereoMetrics {
