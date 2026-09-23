@@ -1,5 +1,6 @@
 #include "apg_sgm/pipeline.hpp"
 #include "apg_sgm/cost_computer.hpp"
+#include "apg_sgm/cost_aggregator.hpp"
 #include "apg_sgm/prior_estimator.hpp"
 #include "apg_sgm/packed_volume.hpp"
 
@@ -180,6 +181,53 @@ int main() {
 
     if (evaluated_disparities == 0) {
         std::cerr << "Error: 0 disparities evaluated in packed test!\n";
+        return 1;
+    }
+
+    // -------------------------------------------------------------
+    // Test Packed CostAggregator equivalence vs Dense CostAggregator
+    // -------------------------------------------------------------
+    std::cout << "[Test Packed CostAggregator (Cross) Equivalence]\n";
+    CostAggregator ca;
+    cfg_hq.aggregation.enable = true;
+    cfg_hq.aggregation.iterations = 2; // test multiple iterations
+
+    // Dense aggregation
+    ca.aggregate(cfg_hq, buf_packed);
+
+    // Packed aggregation
+    ca.aggregate_packed(cfg_hq, buf_packed.left_gray, packed_cost);
+
+    size_t cross_evaluated = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int lo = packed_cost.dmin(x, y);
+            const int hi = packed_cost.dmax(x, y);
+            const uint16_t* p_slice = packed_cost.slice(x, y);
+
+            for (int d = lo; d < hi; ++d) {
+                const uint16_t dense_c = buf_packed.cost.at(x, y, d);
+                const uint16_t packed_c = packed_cost.at(x, y, d);
+                const uint16_t slice_c = p_slice[d - lo];
+
+                if (dense_c != packed_c) {
+                    std::cerr << "Cross mismatch at (" << x << "," << y << ", d=" << d << "): dense="
+                              << dense_c << " vs packed=" << packed_c << "\n";
+                    return 1;
+                }
+                if (packed_c != slice_c) {
+                    std::cerr << "Cross slice mismatch at (" << x << "," << y << ", d=" << d << "): packed="
+                              << packed_c << " vs slice=" << slice_c << "\n";
+                    return 1;
+                }
+                cross_evaluated++;
+            }
+        }
+    }
+    std::cout << "  Evaluated " << cross_evaluated << " packed cross-aggregated states (100% bit-exact match!)\n";
+
+    if (cross_evaluated != evaluated_disparities) {
+        std::cerr << "Error: cross evaluated count mismatch: " << cross_evaluated << " vs " << evaluated_disparities << "\n";
         return 1;
     }
 
