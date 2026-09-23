@@ -73,6 +73,7 @@ public:
 
     int width() const { return w_; }
     int height() const { return h_; }
+    bool empty() const { return data_.empty(); }
     int16_t* data() { return data_.data(); }
     const int16_t* data() const { return data_.data(); }
     int16_t& at(int x, int y) { return data_[y * w_ + x]; }
@@ -92,6 +93,7 @@ public:
 
     int width() const { return w_; }
     int height() const { return h_; }
+    bool empty() const { return data_.empty(); }
     uint8_t* data() { return data_.data(); }
     const uint8_t* data() const { return data_.data(); }
     uint8_t& at(int x, int y) { return data_[y * w_ + x]; }
@@ -108,5 +110,7 @@ bool load_image(const std::string& path, Image8& out);
 bool save_pgm(const std::string& path, const Image8& img);
 bool save_pgm16(const std::string& path, const Image16s& disp, int scale = kSubpixelScale);
 bool save_disparity_preview(const std::string& path, const Image32f& disp, float dmax);
+bool load_pfm(const std::string& path, Image32f& out);
+bool save_pfm(const std::string& path, const Image32f& img);
 
 } // namespace apg

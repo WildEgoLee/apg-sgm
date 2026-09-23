@@ -43,3 +43,8 @@ jobs:
       - name: Run Tests
         run: |
           ctest --test-dir build -C Release --output-on-failure
+
+      - name: Run Benchmark Smoke Test
+        run: |
+          python3 tools/prepare_dataset.py --synthetic
+          ./build/apg-benchmark --manifest benchmarks/manifests/synthetic.txt --output results/test_ci.csv --warmup 0 --repeat 1

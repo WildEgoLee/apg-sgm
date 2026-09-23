@@ -1,0 +1,4 @@
+# APG-SGM Dataset Manifest
+# Format: case_name left_img right_img gt_disp [dmax] [dmin]
+synth_blocks ../data/synthetic/synth_blocks_left.pgm ../data/synthetic/synth_blocks_right.pgm ../data/synthetic/synth_blocks_gt.pfm 32 0
+synth_large ../data/synthetic/synth_large_left.pgm ../data/synthetic/synth_large_right.pgm ../data/synthetic/synth_large_gt.pfm 48 0

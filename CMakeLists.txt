@@ -20,6 +20,8 @@ add_library(apg_sgm
     src/refiner.cpp
     src/postprocess.cpp
     src/pipeline.cpp
+    src/ablation.cpp
+    src/metrics.cpp
 )
 target_include_directories(apg_sgm PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -38,6 +40,9 @@ endif()
 add_executable(apg-stereo apps/run_stereo.cpp)
 target_link_libraries(apg-stereo PRIVATE apg_sgm)
 
+add_executable(apg-benchmark apps/benchmark_stereo.cpp)
+target_link_libraries(apg-benchmark PRIVATE apg_sgm)
+
 enable_testing()
 add_executable(apg_sgm_tests tests/test_sanity.cpp)
 target_link_libraries(apg_sgm_tests PRIVATE apg_sgm)
@@ -46,3 +51,7 @@ add_test(NAME sanity COMMAND apg_sgm_tests)
 add_executable(test_synthetic tests/test_synthetic.cpp)
 target_link_libraries(test_synthetic PRIVATE apg_sgm)
 add_test(NAME synthetic COMMAND test_synthetic)
+
+add_executable(test_ablation tests/test_ablation.cpp)
+target_link_libraries(test_ablation PRIVATE apg_sgm)
+add_test(NAME ablation COMMAND test_ablation)

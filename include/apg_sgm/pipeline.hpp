@@ -2,6 +2,7 @@
 
 #include "apg_sgm/buffers.hpp"
 #include "apg_sgm/config.hpp"
+#include "apg_sgm/pipeline_stats.hpp"
 
 namespace apg {
 
@@ -12,7 +13,8 @@ public:
     void set_config(const PipelineConfig& cfg) { cfg_ = cfg; }
     const PipelineConfig& config() const { return cfg_; }
 
-    bool compute(const Image8& left, const Image8& right, PipelineBuffers& out) const;
+    bool compute(const Image8& left, const Image8& right, PipelineBuffers& out,
+                 PipelineStats* stats = nullptr) const;
     const std::string& last_error() const { return last_error_; }
 
 private:

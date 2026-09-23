@@ -1,7 +1,9 @@
 #include "apg_sgm/image.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 
@@ -122,6 +124,85 @@ bool save_disparity_preview(const std::string& path, const Image32f& disp, float
         }
     }
     return save_pgm(path, preview);
+}
+
+bool load_pfm(const std::string& path, Image32f& out) {
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs) return false;
+
+    auto read_token = [](std::ifstream& is, std::string& tok) -> bool {
+        tok.clear();
+        int c = 0;
+        while ((c = is.get()) != EOF) {
+            if (c == '#') {
+                while ((c = is.get()) != EOF && c != '\n');
+                continue;
+            }
+            if (!std::isspace(c)) {
+                tok.push_back(static_cast<char>(c));
+                break;
+            }
+        }
+        if (tok.empty()) return false;
+        while ((c = is.get()) != EOF) {
+            if (std::isspace(c)) {
+                break;
+            }
+            tok.push_back(static_cast<char>(c));
+        }
+        return true;
+    };
+
+    std::string tag, sw, sh, sscale;
+    if (!read_token(ifs, tag) || !read_token(ifs, sw) || !read_token(ifs, sh) || !read_token(ifs, sscale)) {
+        return false;
+    }
+
+    if (tag != "Pf" && tag != "PF") {
+        return false;
+    }
+    const int channels = (tag == "PF") ? 3 : 1;
+    const int w = std::stoi(sw);
+    const int h = std::stoi(sh);
+    const float scale = std::stof(sscale);
+    if (w <= 0 || h <= 0) return false;
+
+    const bool need_byteswap = (scale > 0.0f);
+
+    out = Image32f(w, h, 0.0f);
+    std::vector<float> row_buf(static_cast<size_t>(w) * channels);
+
+    for (int y = h - 1; y >= 0; --y) {
+        ifs.read(reinterpret_cast<char*>(row_buf.data()), static_cast<std::streamsize>(row_buf.size() * sizeof(float)));
+        if (!ifs) return false;
+
+        if (need_byteswap) {
+            for (float& val : row_buf) {
+                uint32_t u;
+                std::memcpy(&u, &val, sizeof(float));
+                u = ((u >> 24) & 0xff) | ((u >> 8) & 0xff00) | ((u << 8) & 0xff0000) | ((u << 24) & 0xff000000);
+                std::memcpy(&val, &u, sizeof(float));
+            }
+        }
+
+        for (int x = 0; x < w; ++x) {
+            out.at(x, y) = row_buf[static_cast<size_t>(x) * channels];
+        }
+    }
+    return true;
+}
+
+bool save_pfm(const std::string& path, const Image32f& img) {
+    if (img.empty()) return false;
+    std::ofstream ofs(path, std::ios::binary);
+    if (!ofs) return false;
+
+    ofs << "Pf\n" << img.width() << " " << img.height() << "\n-1.0\n";
+    for (int y = img.height() - 1; y >= 0; --y) {
+        ofs.write(reinterpret_cast<const char*>(img.data() + static_cast<size_t>(y) * img.width()),
+                  static_cast<std::streamsize>(img.width() * sizeof(float)));
+    }
+    return static_cast<bool>(ofs);
 }
 
 } // namespace apg

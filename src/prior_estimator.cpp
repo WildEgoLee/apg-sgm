@@ -280,9 +280,11 @@ void PriorEstimator::estimate(const PipelineConfig& cfg, PipelineBuffers& buf) c
         }
     }
     buf.d_prior = Image32f(w, h, -1.f);
+    buf.support_count = 0;
     if (!cfg.prior.enable) return;
 
     auto supports = extract_supports(cfg, buf);
+    buf.support_count = supports.size();
     if (static_cast<int>(supports.size()) < cfg.prior.min_supports) return;
     interpolate_prior(supports, buf);
     apply_search_range(cfg, buf);

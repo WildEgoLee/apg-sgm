@@ -8,4 +8,8 @@ cmake-build-*/
 *.pgm
 *.ppm
 *.png
+*.pfm
+benchmarks/data/
+results/*.csv
+!results/.gitkeep
 .DS_Store

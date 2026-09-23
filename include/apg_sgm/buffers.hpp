@@ -94,6 +94,7 @@ struct PipelineBuffers {
     std::vector<uint64_t> census_right64;
 
     SearchRange range;
+    size_t support_count = 0;
     Image32f d_prior;
     Image32f prior_confidence;
     Image32f prior_spread;
@@ -101,6 +102,7 @@ struct PipelineBuffers {
     CostVolume32 cost32;
     CostVolume cost_right;
     Image32f disparity;
+    Image32f d_before_refine;
     Image32f disparity_right;
     Image32f confidence;
     Image8u1 invalid_reason;
