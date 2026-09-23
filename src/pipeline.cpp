@@ -119,11 +119,12 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
     const auto t2 = time_now();
     cost.compute_volume(cfg_, out);
     const auto t3 = time_now();
-    agg.aggregate(cfg_, out);
+
+    // Compute right disparity from raw/local cost volume BEFORE left Cross-arm aggregation
+    wta_right_from_left_volume(cfg_, out.cost, out.disparity_right);
     const auto t4 = time_now();
 
-    // Compute right disparity from preconditioned cost volume before left SGM
-    wta_right_from_left_volume(cfg_, out.cost, out.disparity_right);
+    agg.aggregate(cfg_, out);
     const auto t5 = time_now();
 
     // Optimize left volume with SGM streaming into out.cost32
@@ -151,8 +152,8 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         stats->timing.aux_ms = elapsed_ms(t0, t1);
         stats->timing.prior_ms = elapsed_ms(t1, t2);
         stats->timing.cost_ms = elapsed_ms(t2, t3);
-        stats->timing.cross_ms = elapsed_ms(t3, t4);
-        stats->timing.right_wta_ms = elapsed_ms(t4, t5);
+        stats->timing.right_wta_ms = elapsed_ms(t3, t4);
+        stats->timing.cross_ms = elapsed_ms(t4, t5);
         stats->timing.sgm_ms = elapsed_ms(t5, t6);
         stats->timing.wta_ms = elapsed_ms(t6, t7);
         stats->timing.confidence_ms = elapsed_ms(t7, t8);
@@ -168,6 +169,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         const int h = out.disparity.height();
         const int n_pixels = w * h;
         double sum_width = 0.0;
+        double sum_geom_width = 0.0;
         size_t reliable = 0;
         size_t unreliable = 0;
         size_t refine_changed = 0;
@@ -178,6 +180,10 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
                 const int lo = out.range.dmin.at(x, y);
                 const int hi = out.range.dmax.at(x, y);
                 sum_width += (hi > lo ? (hi - lo) : 0);
+
+                const int glo = cfg_.min_disparity;
+                const int ghi = std::min(cfg_.max_disparity, x + 1);
+                sum_geom_width += (ghi > glo ? (ghi - glo) : 0);
 
                 if (!out.reliable_mask.empty() && out.reliable_mask.at(x, y)) {
                     ++reliable;
@@ -205,6 +211,10 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         const int global_D = cfg_.max_disparity - cfg_.min_disparity;
         stats->prior_support_count = out.support_count;
         stats->mean_search_width = n_pixels > 0 ? (sum_width / n_pixels) : 0.0;
+        stats->mean_geometry_width = n_pixels > 0 ? (sum_geom_width / n_pixels) : 0.0;
+        stats->geometry_reduction_ratio = global_D > 0 ? (1.0 - stats->mean_geometry_width / global_D) : 0.0;
+        stats->prior_incremental_reduction_ratio = stats->mean_geometry_width > 0.0 ?
+            (1.0 - stats->mean_search_width / stats->mean_geometry_width) : 0.0;
         stats->search_reduction_ratio = global_D > 0 ? (1.0 - stats->mean_search_width / global_D) : 0.0;
         stats->reliable_pixels = reliable;
         stats->unreliable_pixels = unreliable;

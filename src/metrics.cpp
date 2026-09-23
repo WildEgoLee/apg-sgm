@@ -11,6 +11,7 @@ StereoMetrics evaluate_stereo(
     const SearchRange* range,
     const Image32f* d_before_refine,
     const Image32f* d_after_refine,
+    const Image8* vis_mask,
     float max_valid_gt) {
 
     StereoMetrics m;
@@ -28,8 +29,18 @@ StereoMetrics evaluate_stereo(
     int count_2_0 = 0;
     int count_3_0 = 0;
 
-    int range_in_count = 0;
     int lr_fail_count = 0;
+
+    int eval_all = 0;
+    int in_range_all = 0;
+    int eval_matchable = 0;
+    int in_range_matchable = 0;
+    int eval_visible = 0;
+    int in_range_visible = 0;
+
+    int prior_miss_visible = 0;
+    int prior_miss_edge = 0;
+    int prior_miss_nonedge = 0;
 
     // Edge mask based on GT
     std::vector<uint8_t> is_edge(static_cast<size_t>(w) * h, 0);
@@ -39,7 +50,7 @@ StereoMetrics evaluate_stereo(
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const float g = gt.at(x, y);
-            if (!std::isfinite(g) || g <= 0.0f || g > max_valid_gt) {
+            if (!std::isfinite(g) || g < 0.0f || g >= max_valid_gt) {
                 continue;
             }
             float max_diff = 0.0f;
@@ -48,7 +59,7 @@ StereoMetrics evaluate_stereo(
                 const int ny = y + dys[k];
                 if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
                     const float ng = gt.at(nx, ny);
-                    if (std::isfinite(ng) && ng > 0.0f && ng <= max_valid_gt) {
+                    if (std::isfinite(ng) && ng >= 0.0f && ng < max_valid_gt) {
                         max_diff = std::max(max_diff, std::abs(g - ng));
                     }
                 }
@@ -82,18 +93,44 @@ StereoMetrics evaluate_stereo(
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const float g = gt.at(x, y);
-            if (!std::isfinite(g) || g <= 0.0f || g > max_valid_gt) {
+            // Strict upper bound g < max_valid_gt
+            if (!std::isfinite(g) || g < 0.0f || g >= max_valid_gt) {
                 continue;
             }
 
             m.evaluated_pixels++;
 
+            const int xr = x - static_cast<int>(std::round(g));
+            const bool is_matchable = (xr >= 0 && xr < w);
+            const bool is_visible = (vis_mask && !vis_mask->empty()) ? (vis_mask->at(x, y) > 0) : is_matchable;
+
             if (range) {
+                m.has_range = true;
                 const int dmin = range->dmin.at(x, y);
                 const int dmax = range->dmax.at(x, y);
                 // Strict half-open interval [dmin, dmax)
-                if (g >= static_cast<float>(dmin) && g < static_cast<float>(dmax)) {
-                    range_in_count++;
+                const bool in_range = (g >= static_cast<float>(dmin) && g < static_cast<float>(dmax));
+
+                eval_all++;
+                if (in_range) in_range_all++;
+
+                if (is_matchable) {
+                    eval_matchable++;
+                    if (in_range) in_range_matchable++;
+                }
+
+                if (is_visible) {
+                    eval_visible++;
+                    if (in_range) {
+                        in_range_visible++;
+                    } else {
+                        prior_miss_visible++;
+                        if (is_edge[static_cast<size_t>(y) * w + x]) {
+                            prior_miss_edge++;
+                        } else {
+                            prior_miss_nonedge++;
+                        }
+                    }
                 }
             }
 
@@ -156,8 +193,19 @@ StereoMetrics evaluate_stereo(
     if (m.evaluated_pixels > 0) {
         m.valid_ratio = static_cast<float>(m.valid_pixels) / static_cast<float>(m.evaluated_pixels);
         m.lr_fail_ratio = static_cast<float>(lr_fail_count) / static_cast<float>(m.evaluated_pixels);
-        if (range) {
-            m.range_gt_recall = static_cast<float>(range_in_count) / static_cast<float>(m.evaluated_pixels);
+    }
+
+    if (range) {
+        m.range_recall_all = eval_all > 0 ? static_cast<float>(in_range_all) / eval_all : 0.0f;
+        m.range_recall_matchable = eval_matchable > 0 ? static_cast<float>(in_range_matchable) / eval_matchable : 0.0f;
+        m.range_recall_visible = eval_visible > 0 ? static_cast<float>(in_range_visible) / eval_visible : 0.0f;
+
+        m.prior_miss_visible_count = prior_miss_visible;
+        m.prior_miss_edge = prior_miss_edge;
+        m.prior_miss_nonedge = prior_miss_nonedge;
+        if (prior_miss_visible > 0) {
+            m.prior_miss_edge_ratio = static_cast<float>(prior_miss_edge) / prior_miss_visible;
+            m.prior_miss_nonedge_ratio = static_cast<float>(prior_miss_nonedge) / prior_miss_visible;
         }
     }
 

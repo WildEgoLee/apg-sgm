@@ -79,6 +79,7 @@ def generate_synthetic_scene(out_dir: Path, name: str, width: int, height: int, 
             )
             left_pix[y * width + x] = max(0, min(255, int(val)))
 
+    owner_xl = [-1] * (width * height)
     # Forward warp from left to right with z-buffer (x_R = x_L - d)
     for y in range(height):
         for xl in range(width):
@@ -89,7 +90,20 @@ def generate_synthetic_scene(out_dir: Path, name: str, width: int, height: int, 
                 # Retain surface closer to camera (larger disparity)
                 if d_val > z_buf[y * width + xr]:
                     z_buf[y * width + xr] = d_val
+                    owner_xl[y * width + xr] = xl
                     right_pix[y * width + xr] = left_pix[y * width + xl]
+
+    # Compute left-reference visibility mask: 255 if matchable and visible in right image
+    vis_pix = bytearray(width * height)
+    for y in range(height):
+        for xl in range(width):
+            d_val = gt[y * width + xl]
+            d_int = int(round(d_val))
+            xr = xl - d_int
+            if 0 <= xr < width and owner_xl[y * width + xr] == xl:
+                vis_pix[y * width + xl] = 255
+            else:
+                vis_pix[y * width + xl] = 0
 
     # For disoccluded / unmapped pixels in right image, synthesize background texture
     for y in range(height):
@@ -105,12 +119,14 @@ def generate_synthetic_scene(out_dir: Path, name: str, width: int, height: int, 
     left_path = out_dir / f"{name}_left.pgm"
     right_path = out_dir / f"{name}_right.pgm"
     gt_path = out_dir / f"{name}_gt.pfm"
+    vis_path = out_dir / f"{name}_vis.pgm"
 
     write_pgm(left_path, width, height, bytes(left_pix))
     write_pgm(right_path, width, height, bytes(right_pix))
     write_pfm(gt_path, width, height, gt)
+    write_pgm(vis_path, width, height, bytes(vis_pix))
 
-    return left_path, right_path, gt_path
+    return left_path, right_path, gt_path, vis_path
 
 
 def main():
@@ -132,16 +148,17 @@ def main():
 
     manifest_lines = [
         "# APG-SGM Dataset Manifest",
-        "# Format: case_name left_img right_img gt_disp [dmax] [dmin]",
+        "# Format: case_name left_img right_img gt_disp [dmax] [dmin] [vis_mask]",
     ]
 
     for name, w, h, stype, dmax in cases:
         print(f"Generating synthetic scene: {name} ({w}x{h}, {stype}, dmax={dmax})...")
-        lp, rp, gp = generate_synthetic_scene(out_dir, name, w, h, stype, dmax)
+        lp, rp, gp, vp = generate_synthetic_scene(out_dir, name, w, h, stype, dmax)
         rel_lp = os.path.relpath(lp, manifest_path.parent).replace("\\", "/")
         rel_rp = os.path.relpath(rp, manifest_path.parent).replace("\\", "/")
         rel_gp = os.path.relpath(gp, manifest_path.parent).replace("\\", "/")
-        manifest_lines.append(f"{name} {rel_lp} {rel_rp} {rel_gp} {dmax} 0")
+        rel_vp = os.path.relpath(vp, manifest_path.parent).replace("\\", "/")
+        manifest_lines.append(f"{name} {rel_lp} {rel_rp} {rel_gp} {dmax} 0 {rel_vp}")
 
     with open(manifest_path, "w", encoding="utf-8") as f:
         f.write("\n".join(manifest_lines) + "\n")

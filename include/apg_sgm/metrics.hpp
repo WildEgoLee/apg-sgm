@@ -25,8 +25,20 @@ struct StereoMetrics {
     int nonedge_pixels = 0;
     float nonedge_epe = 0.0f;
 
-    float range_gt_recall = 0.0f;
     float lr_fail_ratio = 0.0f;
+
+    // Granular SearchRange GT Recalls
+    bool has_range = false;
+    float range_recall_all = 0.0f;        // All evaluated GT pixels
+    float range_recall_matchable = 0.0f;  // Pixels with xr = xl - round(d) in [0, W)
+    float range_recall_visible = 0.0f;    // Matchable & visible in right image (z-buffer unoccluded)
+
+    // Spatial breakdown of misses among visible GT pixels
+    int prior_miss_visible_count = 0;
+    int prior_miss_edge = 0;
+    int prior_miss_nonedge = 0;
+    float prior_miss_edge_ratio = 0.0f;
+    float prior_miss_nonedge_ratio = 0.0f;
 
     // Disentangled Refinement & Post-processing metrics (evaluated on identical pixel sets)
     bool has_refine_stats = false;
@@ -46,6 +58,7 @@ StereoMetrics evaluate_stereo(
     const SearchRange* range = nullptr,
     const Image32f* d_before_refine = nullptr,
     const Image32f* d_after_refine = nullptr,
+    const Image8* vis_mask = nullptr,
     float max_valid_gt = 1e5f);
 
 } // namespace apg

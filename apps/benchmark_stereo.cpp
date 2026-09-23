@@ -23,6 +23,7 @@ struct BenchmarkCase {
     std::string gt_path;
     int dmax = 128;
     int dmin = 0;
+    std::string vis_path;
 };
 
 static std::vector<BenchmarkCase> parse_manifest(const std::string& manifest_path) {
@@ -50,6 +51,7 @@ static std::vector<BenchmarkCase> parse_manifest(const std::string& manifest_pat
 
         iss >> c.dmax;
         iss >> c.dmin;
+        iss >> c.vis_path;
 
         fs::path lp(c.left_path);
         if (lp.is_relative()) c.left_path = (base_dir / lp).lexically_normal().string();
@@ -59,6 +61,11 @@ static std::vector<BenchmarkCase> parse_manifest(const std::string& manifest_pat
 
         fs::path gp(c.gt_path);
         if (gp.is_relative()) c.gt_path = (base_dir / gp).lexically_normal().string();
+
+        if (!c.vis_path.empty()) {
+            fs::path vp(c.vis_path);
+            if (vp.is_relative()) c.vis_path = (base_dir / vp).lexically_normal().string();
+        }
 
         cases.push_back(c);
     }
@@ -158,10 +165,12 @@ int main(int argc, char** argv) {
     }
 
     csv << "case,ablation_id,ablation_name,cost,cross,p2,prior,refine,paths,w,h,dmax,"
-        << "epe,bad_0_5,bad_1_0,bad_2_0,bad_3_0,valid_ratio,lr_fail_ratio,edge_epe,nonedge_epe,range_recall,"
-        << "prior_supports,mean_search_width,search_reduction_ratio,cost_bytes,cost32_bytes,peak_bytes,"
+        << "epe,bad_0_5,bad_1_0,bad_2_0,bad_3_0,valid_ratio,lr_fail_ratio,edge_epe,nonedge_epe,"
+        << "recall_all,recall_matchable,recall_visible,prior_miss_vis_count,prior_miss_edge_pct,prior_miss_nonedge_pct,"
+        << "prior_supports,mean_search_width,mean_geom_width,geom_reduction_ratio,prior_incremental_reduction,total_reduction_ratio,"
+        << "cost_bytes,cost32_bytes,peak_bytes,"
         << "reliable_ratio,unreliable_ratio,refine_changed_ratio,refine_epe_delta,post_epe_delta,total_epe_delta,"
-        << "time_total_ms,time_cost_ms,time_cross_ms,time_sgm_ms,time_prior_ms,time_refine_ms,time_post_ms\n";
+        << "time_total_ms,time_cost_ms,time_right_wta_ms,time_cross_ms,time_sgm_ms,time_prior_ms,time_refine_ms,time_post_ms\n";
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
@@ -186,6 +195,9 @@ int main(int argc, char** argv) {
         if (!has_gt) {
             std::cout << "Note: could not load GT PFM (" << c.gt_path << "), will report metrics as N/A\n";
         }
+
+        apg::Image8 vis_mask;
+        bool has_vis = !c.vis_path.empty() && apg::load_image(c.vis_path, vis_mask);
 
         const int w = left_img.width();
         const int h = left_img.height();
@@ -233,7 +245,8 @@ int main(int argc, char** argv) {
                 const apg::SearchRange* range_ptr = cfg.prior.enable ? &best_sample.bufs.range : nullptr;
                 const apg::Image32f* before_refine_ptr = cfg.refine.enable ? &best_sample.bufs.d_before_refine : nullptr;
                 const apg::Image32f* after_refine_ptr = cfg.refine.enable ? &best_sample.bufs.d_after_refine : nullptr;
-                m = apg::evaluate_stereo(best_sample.bufs.disparity, gt_disp, range_ptr, before_refine_ptr, after_refine_ptr, static_cast<float>(c.dmax));
+                const apg::Image8* vis_ptr = has_vis ? &vis_mask : nullptr;
+                m = apg::evaluate_stereo(best_sample.bufs.disparity, gt_disp, range_ptr, before_refine_ptr, after_refine_ptr, vis_ptr, static_cast<float>(c.dmax));
             }
 
             std::string id_str = apg::ablation_id_to_string(aid);
@@ -249,9 +262,14 @@ int main(int argc, char** argv) {
             std::cout << "[" << id_str << "] " << std::setw(32) << std::left << desc_str
                       << " | EPE: " << std::setw(6) << std::fixed << std::setprecision(3) << (has_gt ? m.epe : -1.f)
                       << " | Bad2.0: " << std::setw(5) << std::setprecision(1) << (has_gt ? m.bad_2_0 : -1.f) << "%"
-                      << " | D_bar: " << std::setw(5) << std::setprecision(1) << best_sample.stats.mean_search_width
-                      << " | Recall: " << std::setw(5) << std::setprecision(1) << (m.range_gt_recall * 100.0f) << "%"
-                      << " | Time: " << std::setw(6) << std::setprecision(2) << best_sample.total_ms << " ms"
+                      << " | D_bar: " << std::setw(4) << std::setprecision(1) << best_sample.stats.mean_search_width;
+            if (cfg.prior.enable && has_gt && m.has_range) {
+                std::cout << " | Rec(vis): " << std::setw(5) << std::setprecision(1) << (m.range_recall_visible * 100.0f) << "%"
+                          << " | Rec(all): " << std::setw(5) << std::setprecision(1) << (m.range_recall_all * 100.0f) << "%";
+            } else {
+                std::cout << " | Recall: N/A        ";
+            }
+            std::cout << " | Time: " << std::setw(6) << std::setprecision(2) << best_sample.total_ms << " ms"
                       << " (SGM: " << std::setprecision(2) << best_sample.stats.timing.sgm_ms << " ms)"
                       << std::endl;
 
@@ -277,12 +295,28 @@ int main(int argc, char** argv) {
                 << (has_gt ? m.valid_ratio : 0.f) << ","
                 << (has_gt ? m.lr_fail_ratio : 0.f) << ","
                 << (has_gt ? m.edge_epe : 0.f) << ","
-                << (has_gt ? m.nonedge_epe : 0.f) << ","
-                << (has_gt ? m.range_gt_recall : 0.f) << ","
-                << best_sample.stats.prior_support_count << ","
+                << (has_gt ? m.nonedge_epe : 0.f) << ",";
+
+            if (cfg.prior.enable && has_gt && m.has_range) {
+                csv << std::fixed << std::setprecision(4)
+                    << m.range_recall_all << ","
+                    << m.range_recall_matchable << ","
+                    << m.range_recall_visible << ","
+                    << m.prior_miss_visible_count << ","
+                    << std::setprecision(2)
+                    << (m.prior_miss_edge_ratio * 100.0f) << ","
+                    << (m.prior_miss_nonedge_ratio * 100.0f) << ",";
+            } else {
+                csv << "N/A,N/A,N/A,0,0.00,0.00,";
+            }
+
+            csv << best_sample.stats.prior_support_count << ","
                 << std::setprecision(2)
                 << best_sample.stats.mean_search_width << ","
+                << best_sample.stats.mean_geometry_width << ","
                 << std::setprecision(4)
+                << best_sample.stats.geometry_reduction_ratio << ","
+                << (cfg.prior.enable ? best_sample.stats.prior_incremental_reduction_ratio : 0.0) << ","
                 << best_sample.stats.search_reduction_ratio << ","
                 << best_sample.stats.cost_bytes << ","
                 << best_sample.stats.aggregated_cost_bytes << ","
@@ -296,6 +330,7 @@ int main(int argc, char** argv) {
                 << std::setprecision(2)
                 << best_sample.total_ms << ","
                 << best_sample.stats.timing.cost_ms << ","
+                << best_sample.stats.timing.right_wta_ms << ","
                 << best_sample.stats.timing.cross_ms << ","
                 << best_sample.stats.timing.sgm_ms << ","
                 << best_sample.stats.timing.prior_ms << ","

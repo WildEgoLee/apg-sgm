@@ -415,7 +415,7 @@ int main() {
             return 1;
         }
 
-        auto m = evaluate_stereo(bufs.disparity, gt, nullptr, nullptr, nullptr, static_cast<float>(DMAX));
+        auto m = evaluate_stereo(bufs.disparity, gt, nullptr, nullptr, nullptr, nullptr, static_cast<float>(DMAX));
         std::cout << "  Baseline A on Constant Plane: EPE=" << m.epe
                   << " px, Bad-1.0=" << m.bad_1_0 << "%, Valid Ratio=" << (m.valid_ratio * 100.0f) << "%\n";
 

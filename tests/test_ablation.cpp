@@ -120,7 +120,17 @@ static void test_metrics() {
     range.allocate(10, 10, 0, 10);
     // GT is 10.0 on right half, range is [0, 10). Should NOT recall pixels with GT == 10.0
     auto m_range = evaluate_stereo(est, gt, &range);
-    assert(std::abs(m_range.range_gt_recall - 0.50f) < 1e-4f);
+    assert(std::abs(m_range.range_recall_all - 0.50f) < 1e-4f);
+
+    // Test visibility mask recall
+    Image8 vis(10, 10, 255);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 5; x < 10; ++x) {
+            vis.at(x, y) = 0; // right half is occluded
+        }
+    }
+    auto m_vis = evaluate_stereo(est, gt, &range, nullptr, nullptr, &vis);
+    assert(std::abs(m_vis.range_recall_visible - 1.0f) < 1e-4f);
 
     // Test decoupled Refine & Post metrics
     Image32f before(10, 10, 5.0f);

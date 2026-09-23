@@ -27,6 +27,9 @@ struct PipelineStats {
 
     size_t prior_support_count = 0;
     double mean_search_width = 0.0;
+    double mean_geometry_width = 0.0;
+    double geometry_reduction_ratio = 0.0;
+    double prior_incremental_reduction_ratio = 0.0;
     double search_reduction_ratio = 0.0;
 
     size_t reliable_pixels = 0;

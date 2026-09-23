@@ -250,15 +250,19 @@ void PriorEstimator::apply_search_range(const PipelineConfig& cfg, PipelineBuffe
             const float spread = !buf.prior_spread.empty() ? buf.prior_spread.at(x, y) : 999.f;
 
             int R = default_R;
-            if (conf > 0.9f && spread < 2.f) {
-                R = 8;
-            } else if (conf > 0.6f) {
-                R = 16;
-            } else if (conf > 0.3f) {
-                R = 32;
-            } else {
+            if (conf < 0.25f) {
                 R = global_D;
+            } else if (conf > 0.85f && spread < 1.5f) {
+                R = 8;
+            } else if (conf > 0.60f && spread < 3.0f) {
+                R = static_cast<int>(12.f + 1.5f * spread + 0.5f);
+            } else if (conf > 0.40f && spread < 6.0f) {
+                R = static_cast<int>(18.f + 2.0f * spread + 0.5f);
+            } else {
+                // High spread, depth edge or uncertain transition: conservative search
+                R = std::max(28, static_cast<int>(20.f + 2.5f * spread + 0.5f));
             }
+            R = std::min(R, global_D);
 
             const int lo = static_cast<int>(std::floor(dp)) - R;
             int hi = static_cast<int>(std::ceil(dp)) + R + 1;
