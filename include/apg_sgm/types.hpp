@@ -39,6 +39,19 @@ constexpr uint16_t kInvalidCost = 65535;
 constexpr uint32_t kInvalidCost32 = 0xFFFFFFFFu;
 constexpr int kPathInf = 1 << 28;
 
+template <typename T>
+constexpr T invalid_cost();
+
+template <>
+constexpr uint16_t invalid_cost<uint16_t>() {
+    return kInvalidCost;
+}
+
+template <>
+constexpr uint32_t invalid_cost<uint32_t>() {
+    return kInvalidCost32;
+}
+
 struct Size {
     int width = 0;
     int height = 0;

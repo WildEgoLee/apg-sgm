@@ -1,6 +1,7 @@
 #include "apg_sgm/pipeline.hpp"
 #include "apg_sgm/sgm_optimizer.hpp"
 #include "apg_sgm/cost_computer.hpp"
+#include "apg_sgm/prior_estimator.hpp"
 
 #include <cmath>
 #include <iostream>
@@ -137,15 +138,20 @@ static void make_brightness_shift(int w, int h, int d_val, int shift, Image8& le
     }
 }
 
+static uint8_t scene_repeated(int x, int y) {
+    if (x < 24) return rich_texture(x, y);
+    const int stripe = ((x % 8) < 4) ? 50 : 200;
+    const int grad = (y * 3) % 25;
+    return static_cast<uint8_t>(clampi(stripe + grad, 0, 255));
+}
+
 static void make_repeated_pattern(int w, int h, int d_val, Image8& left, Image8& right) {
     left = Image8(w, h, 1);
     right = Image8(w, h, 1);
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
-            const uint8_t val = ((x % 6) < 3) ? 40 : 210;
-            left.at(x, y) = val;
-            const uint8_t rval = (((x + d_val) % 6) < 3) ? 40 : 210;
-            right.at(x, y) = rval;
+            left.at(x, y) = scene_repeated(x, y);
+            right.at(x, y) = scene_repeated(x + d_val, y);
         }
     }
 }
@@ -187,6 +193,7 @@ int main() {
     }
 
     const int W = 100, H = 50;
+    double textured_mean_conf = 0.0;
 
     // 1. Constant disparity d=8
     {
@@ -196,6 +203,7 @@ int main() {
             [&](const char* mode, const PipelineBuffers& buf) {
                 int valid = 0, close = 0;
                 double sum = 0.0;
+                double conf_sum = 0.0;
                 for (int y = 6; y < H - 6; ++y) {
                     for (int x = 16; x < W - 16; ++x) {
                         float d = buf.disparity.at(x, y);
@@ -203,6 +211,7 @@ int main() {
                             valid++;
                             sum += d;
                             if (std::abs(d - 8.f) <= 1.5f) close++;
+                            conf_sum += buf.confidence.at(x, y);
                         }
                     }
                 }
@@ -212,7 +221,9 @@ int main() {
                 }
                 double mean = sum / valid;
                 double acc_rate = static_cast<double>(close) / valid;
-                std::cout << "    (" << mode << ") valid=" << valid << ", mean=" << mean << ", acc=" << acc_rate * 100.0 << "%\n";
+                textured_mean_conf = conf_sum / valid;
+                std::cout << "    (" << mode << ") valid=" << valid << ", mean=" << mean
+                          << ", acc=" << acc_rate * 100.0 << "%, mean_conf=" << textured_mean_conf << "\n";
                 return acc_rate > 0.85 && std::abs(mean - 8.0) < 1.0;
             });
         if (!ok) return 1;
@@ -271,23 +282,25 @@ int main() {
         if (!ok) return 1;
     }
 
-    // 4. Low texture ramp
+    // 4. Low texture ramp: verify confidence is significantly lower than textured
     {
         Image8 left, right;
         make_low_texture(W, H, 6, left, right);
         bool ok = run_all_modes_test("4: Low Texture Smooth Ramp", left, right, 24,
             [&](const char* mode, const PipelineBuffers& buf) {
-                // Must execute cleanly without crash; low texture pixels should have lower confidence
-                int checked = 0;
+                double low_conf_sum = 0.0;
+                int count = 0;
                 for (int y = 6; y < H - 6; ++y) {
                     for (int x = 10; x < W - 10; ++x) {
-                        float c = buf.confidence.at(x, y);
-                        (void)c;
-                        checked++;
+                        low_conf_sum += buf.confidence.at(x, y);
+                        count++;
                     }
                 }
-                std::cout << "    (" << mode << ") low texture processed " << checked << " pixels cleanly.\n";
-                return checked > 0;
+                double low_mean_conf = count > 0 ? (low_conf_sum / count) : 0.0;
+                std::cout << "    (" << mode << ") low texture mean conf=" << low_mean_conf
+                          << " vs textured=" << textured_mean_conf << "\n";
+                // Confidence on smooth ramp must be lower than textured image
+                return low_mean_conf < textured_mean_conf * 0.7;
             });
         if (!ok) return 1;
     }
@@ -315,21 +328,53 @@ int main() {
         if (!ok) return 1;
     }
 
-    // 6. Repeated texture
+    // 6. Repeated texture: verify Bad-2(SGM) < Bad-2(raw local WTA)
     {
         Image8 left, right;
         make_repeated_pattern(W, H, 6, left, right);
+
+        // Compute raw local WTA Bad-2 rate without SGM
+        CostComputer cc;
+        PipelineConfig raw_cfg = PipelineConfig::from_mode(QualityMode::Fast, 24);
+        raw_cfg.aggregation.enable = false;
+        PipelineBuffers raw_buf;
+        cc.compute_aux(left, right, raw_cfg, raw_buf);
+        PriorEstimator pe;
+        pe.estimate(raw_cfg, raw_buf);
+        cc.compute_volume(raw_cfg, raw_buf);
+        SgmOptimizer opt;
+        Image32f raw_disp;
+        opt.winner_take_all(raw_cfg, raw_buf.cost, raw_buf.range, raw_disp);
+
+        int raw_bad = 0, raw_valid = 0;
+        for (int y = 6; y < H - 6; ++y) {
+            for (int x = 28; x < W - 16; ++x) {
+                float rd = raw_disp.at(x, y);
+                if (rd >= 0.f) {
+                    raw_valid++;
+                    if (std::abs(rd - 6.f) > 2.0f) raw_bad++;
+                }
+            }
+        }
+        double raw_bad_rate = raw_valid > 0 ? (static_cast<double>(raw_bad) / raw_valid) : 1.0;
+        std::cout << "  Raw local WTA Bad-2 in periodic region: " << raw_bad_rate * 100.0 << "%\n";
+
         bool ok = run_all_modes_test("6: Repeated Stripe Pattern", left, right, 24,
             [&](const char* mode, const PipelineBuffers& buf) {
-                // Pipeline processes cleanly
-                int valid = 0;
-                for (int y = 0; y < H; ++y) {
-                    for (int x = 0; x < W; ++x) {
-                        if (buf.disparity.at(x, y) >= 0.f) valid++;
+                int sgm_bad = 0, sgm_valid = 0;
+                for (int y = 6; y < H - 6; ++y) {
+                    for (int x = 28; x < W - 16; ++x) {
+                        float d = buf.disparity.at(x, y);
+                        if (d >= 0.f) {
+                            sgm_valid++;
+                            if (std::abs(d - 6.f) > 2.0f) sgm_bad++;
+                        }
                     }
                 }
-                std::cout << "    (" << mode << ") repeated pattern processed, valid=" << valid << "\n";
-                return true;
+                double sgm_bad_rate = sgm_valid > 0 ? (static_cast<double>(sgm_bad) / sgm_valid) : 1.0;
+                std::cout << "    (" << mode << ") SGM Bad-2=" << sgm_bad_rate * 100.0
+                          << "% vs raw WTA=" << raw_bad_rate * 100.0 << "%\n";
+                return sgm_bad_rate < raw_bad_rate;
             });
         if (!ok) return 1;
     }

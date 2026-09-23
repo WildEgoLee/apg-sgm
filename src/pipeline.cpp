@@ -43,16 +43,23 @@ void wta_right_from_left_volume(const PipelineConfig& cfg, const CostVolume& vol
                 float dval = static_cast<float>(best_d);
                 if (cfg.post.subpixel) {
                     const int di = best_d - d0;
-                    const int xl = xr + best_d;
-                    if (xl >= 0 && xl < w && di > 0 && di + 1 < D) {
-                        const uint16_t* s = vol.slice(xl, y);
-                        if (s[di - 1] != kInvalidCost && s[di + 1] != kInvalidCost) {
-                            const float cm = static_cast<float>(s[di - 1]);
-                            const float c0 = static_cast<float>(s[di]);
-                            const float cp = static_cast<float>(s[di + 1]);
-                            const float denom = cm - 2.f * c0 + cp;
+                    const int xl_m = xr + best_d - 1;
+                    const int xl_0 = xr + best_d;
+                    const int xl_p = xr + best_d + 1;
+                    if (xl_m >= 0 && xl_m < w &&
+                        xl_0 >= 0 && xl_0 < w &&
+                        xl_p >= 0 && xl_p < w &&
+                        di > 0 && di + 1 < D) {
+                        const uint16_t cm = vol.slice(xl_m, y)[di - 1];
+                        const uint16_t c0 = vol.slice(xl_0, y)[di];
+                        const uint16_t cp = vol.slice(xl_p, y)[di + 1];
+                        if (cm != kInvalidCost && c0 != kInvalidCost && cp != kInvalidCost) {
+                            const float fcm = static_cast<float>(cm);
+                            const float fc0 = static_cast<float>(c0);
+                            const float fcp = static_cast<float>(cp);
+                            const float denom = fcm - 2.f * fc0 + fcp;
                             if (std::abs(denom) > 1e-6f) {
-                                float delta = 0.5f * (cm - cp) / denom;
+                                float delta = 0.5f * (fcm - fcp) / denom;
                                 delta = clampf(delta, -0.5f, 0.5f);
                                 dval += delta;
                             }

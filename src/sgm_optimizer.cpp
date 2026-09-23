@@ -190,14 +190,14 @@ void wta_impl(const PipelineConfig& cfg, const CostVolumeT<TCost>& vol,
                 continue;
             }
 
+            const TCost inv_c = invalid_cost<TCost>();
             int best_d = -1;
             uint64_t best = UINT64_MAX;
             for (int d = lo; d < hi; ++d) {
                 const int di = d - d0;
                 if (di < 0 || di >= D) continue;
                 const TCost c = s[di];
-                if (c == static_cast<TCost>(kInvalidCost) ||
-                    c == static_cast<TCost>(kInvalidCost32)) continue;
+                if (c == inv_c) continue;
                 if (static_cast<uint64_t>(c) < best) {
                     best = static_cast<uint64_t>(c);
                     best_d = d;
@@ -217,8 +217,7 @@ void wta_impl(const PipelineConfig& cfg, const CostVolumeT<TCost>& vol,
                 const int di = d - d0;
                 if (di < 0 || di >= D) continue;
                 const TCost c = s[di];
-                if (c == static_cast<TCost>(kInvalidCost) ||
-                    c == static_cast<TCost>(kInvalidCost32)) continue;
+                if (c == inv_c) continue;
                 if (static_cast<uint64_t>(c) < second) {
                     second = static_cast<uint64_t>(c);
                 }
@@ -231,10 +230,7 @@ void wta_impl(const PipelineConfig& cfg, const CostVolumeT<TCost>& vol,
                     const TCost c_m = s[di - 1];
                     const TCost c_0 = s[di];
                     const TCost c_p = s[di + 1];
-                    if (c_m != static_cast<TCost>(kInvalidCost) &&
-                        c_m != static_cast<TCost>(kInvalidCost32) &&
-                        c_p != static_cast<TCost>(kInvalidCost) &&
-                        c_p != static_cast<TCost>(kInvalidCost32)) {
+                    if (c_m != inv_c && c_p != inv_c) {
                         const float cm = static_cast<float>(c_m);
                         const float c0 = static_cast<float>(c_0);
                         const float cp = static_cast<float>(c_p);
