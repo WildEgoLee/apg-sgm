@@ -42,3 +42,7 @@ enable_testing()
 add_executable(apg_sgm_tests tests/test_sanity.cpp)
 target_link_libraries(apg_sgm_tests PRIVATE apg_sgm)
 add_test(NAME sanity COMMAND apg_sgm_tests)
+
+add_executable(test_synthetic tests/test_synthetic.cpp)
+target_link_libraries(test_synthetic PRIVATE apg_sgm)
+add_test(NAME synthetic COMMAND test_synthetic)

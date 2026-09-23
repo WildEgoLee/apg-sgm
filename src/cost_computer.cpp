@@ -123,7 +123,7 @@ void CostComputer::compute_volume(const PipelineConfig& cfg, PipelineBuffers& bu
     const int h = buf.left_gray.height();
     const int d0 = cfg.min_disparity;
     const int d1 = cfg.max_disparity;
-    buf.cost.allocate(w, h, d0, d1, static_cast<uint16_t>(cfg.cost.cost_max));
+    buf.cost.allocate(w, h, d0, d1, kInvalidCost);
 
     const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
     const bool use_ad = cfg.cost.use_ad;
@@ -133,7 +133,8 @@ void CostComputer::compute_volume(const PipelineConfig& cfg, PipelineBuffers& bu
     const float lg = std::max(cfg.cost.lambda_grad, 1e-3f);
     const float eta = cfg.cost.eta_ad;
     const float mu = cfg.cost.mu_grad;
-    const float scale = static_cast<float>(cfg.cost.cost_max);
+    const float norm = 1.f + (use_ad ? eta : 0.f) + (use_grad ? mu : 0.f);
+    const float scale = static_cast<float>(cfg.cost.cost_max) / std::max(norm, 1e-6f);
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(dynamic, 4)
@@ -146,12 +147,12 @@ void CostComputer::compute_volume(const PipelineConfig& cfg, PipelineBuffers& bu
             for (int d = d0; d < d1; ++d) {
                 const int di = d - d0;
                 if (d < lo || d >= hi) {
-                    slice[di] = static_cast<uint16_t>(cfg.cost.cost_max);
+                    slice[di] = kInvalidCost;
                     continue;
                 }
                 const int xr = x - d;
                 if (xr < 0 || xr >= w) {
-                    slice[di] = static_cast<uint16_t>(cfg.cost.cost_max);
+                    slice[di] = kInvalidCost;
                     continue;
                 }
                 float ccensus = 0.f;
@@ -176,7 +177,7 @@ void CostComputer::compute_volume(const PipelineConfig& cfg, PipelineBuffers& bu
                                  static_cast<int>(buf.right_gy.at(xr, y)));
                     c += mu * (1.f - std::exp(-static_cast<float>(g) / lg));
                 }
-                const int q = static_cast<int>(c * scale / (1.f + eta + mu) + 0.5f);
+                const int q = static_cast<int>(c * scale + 0.5f);
                 slice[di] = static_cast<uint16_t>(clampi(q, 0, cfg.cost.cost_max));
             }
         }

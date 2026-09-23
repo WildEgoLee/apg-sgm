@@ -17,8 +17,10 @@ void ConfidenceEstimator::estimate(const PipelineConfig& cfg, PipelineBuffers& b
             const float c1 = best_cost.at(x, y);
             const float c2 = second_cost.at(x, y);
             float uniq = 0.f;
-            if (c1 > 1e-3f) uniq = (c2 - c1) / (c1 + 1e-3f);
-            else uniq = 1.f;
+            if (std::isfinite(c1) && std::isfinite(c2)) {
+                uniq = (c2 - c1) / std::max(c2, 1e-3f);
+                uniq = clampf(uniq, 0.f, 1.f);
+            }
 
             float lr = 1.f;
             if (!buf.disparity_right.empty()) {
@@ -42,13 +44,19 @@ void ConfidenceEstimator::estimate(const PipelineConfig& cfg, PipelineBuffers& b
             if (lr < 0.5f) conf *= 0.25f;
             buf.confidence.at(x, y) = conf;
 
-            const bool reliable = conf >= cfg.refine.conf_threshold &&
+            const bool lr_ok = (lr >= 0.5f);
+            const bool reliable = lr_ok &&
+                                  conf >= cfg.confidence.reliable_threshold &&
                                   uniq >= cfg.confidence.uniqueness_ratio &&
                                   tex >= cfg.confidence.min_texture &&
                                   buf.disparity.at(x, y) >= 0.f;
             buf.reliable_mask.at(x, y) = reliable ? 1 : 0;
             if (!reliable) {
-                buf.invalid_reason.at(x, y) = static_cast<uint8_t>(InvalidReason::LowConfidence);
+                if (!lr_ok) {
+                    buf.invalid_reason.at(x, y) = static_cast<uint8_t>(InvalidReason::Mismatch);
+                } else {
+                    buf.invalid_reason.at(x, y) = static_cast<uint8_t>(InvalidReason::LowConfidence);
+                }
             }
         }
     }

@@ -27,30 +27,35 @@ void wta_right_from_left_volume(const PipelineConfig& cfg, const CostVolume& vol
     disp_right = Image32f(w, h, -1.f);
     for (int y = 0; y < h; ++y) {
         for (int xr = 0; xr < w; ++xr) {
-            int best_d = d0;
-            int best = 65535;
+            int best_d = -1;
+            uint32_t best = UINT32_MAX;
             for (int d = d0; d < d0 + D; ++d) {
                 const int xl = xr + d;
                 if (xl < 0 || xl >= w) continue;
-                const int c = vol.slice(xl, y)[d - d0];
+                const uint16_t c = vol.slice(xl, y)[d - d0];
+                if (c == kInvalidCost) continue;
                 if (c < best) {
                     best = c;
                     best_d = d;
                 }
             }
-            if (best < 65535) {
+            if (best_d >= 0) {
                 float dval = static_cast<float>(best_d);
                 if (cfg.post.subpixel) {
                     const int di = best_d - d0;
                     const int xl = xr + best_d;
                     if (xl >= 0 && xl < w && di > 0 && di + 1 < D) {
                         const uint16_t* s = vol.slice(xl, y);
-                        const float cm = static_cast<float>(s[di - 1]);
-                        const float c0 = static_cast<float>(s[di]);
-                        const float cp = static_cast<float>(s[di + 1]);
-                        const float denom = cm - 2.f * c0 + cp;
-                        if (std::abs(denom) > 1e-6f) {
-                            dval += clampf(0.5f * (cm - cp) / denom, -0.5f, 0.5f);
+                        if (s[di - 1] != kInvalidCost && s[di + 1] != kInvalidCost) {
+                            const float cm = static_cast<float>(s[di - 1]);
+                            const float c0 = static_cast<float>(s[di]);
+                            const float cp = static_cast<float>(s[di + 1]);
+                            const float denom = cm - 2.f * c0 + cp;
+                            if (std::abs(denom) > 1e-6f) {
+                                float delta = 0.5f * (cm - cp) / denom;
+                                delta = clampf(delta, -0.5f, 0.5f);
+                                dval += delta;
+                            }
                         }
                     }
                 }
@@ -95,11 +100,15 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
     prior.estimate(cfg_, out);
     cost.compute_volume(cfg_, out);
     agg.aggregate(cfg_, out);
+
+    // Compute right disparity from preconditioned cost volume before left SGM
+    wta_right_from_left_volume(cfg_, out.cost, out.disparity_right);
+
+    // Optimize left volume with SGM streaming into out.cost32
     sgm.optimize(cfg_, out);
 
     Image32f best, second;
-    sgm.winner_take_all(cfg_, out.cost, out.range, out.disparity, &best, &second);
-    wta_right_from_left_volume(cfg_, out.cost, out.disparity_right);
+    sgm.winner_take_all(cfg_, out.cost32, out.range, out.disparity, &best, &second);
 
     conf.estimate(cfg_, out, best, second);
     refiner.refine(cfg_, out);

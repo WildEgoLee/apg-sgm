@@ -35,6 +35,9 @@ enum class InvalidReason : uint8_t {
 constexpr int kSubpixelShift = 4;
 constexpr int kSubpixelScale = 1 << kSubpixelShift;
 constexpr int16_t kInvalidDisp = -1;
+constexpr uint16_t kInvalidCost = 65535;
+constexpr uint32_t kInvalidCost32 = 0xFFFFFFFFu;
+constexpr int kPathInf = 1 << 28;
 
 struct Size {
     int width = 0;

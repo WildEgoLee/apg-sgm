@@ -62,7 +62,8 @@ void CostAggregator::aggregate_hv(PipelineBuffers& buf,
     const int w = buf.cost.width();
     const int h = buf.cost.height();
     const int D = buf.cost.D();
-    CostVolume tmp(w, h, buf.cost.d0(), buf.cost.d0() + D, 0);
+    const int d0 = buf.cost.d0();
+    CostVolume tmp(w, h, d0, d0 + D, kInvalidCost);
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
@@ -72,12 +73,27 @@ void CostAggregator::aggregate_hv(PipelineBuffers& buf,
             const int i = y * w + x;
             const int x0 = x - Larm[i];
             const int x1 = x + Rarm[i];
-            const int denom = (x1 - x0 + 1);
+            const int lo_c = buf.range.dmin.at(x, y);
+            const int hi_c = buf.range.dmax.at(x, y);
             uint16_t* dst = tmp.slice(x, y);
             for (int di = 0; di < D; ++di) {
+                const int d = d0 + di;
+                if (d < lo_c || d >= hi_c) {
+                    dst[di] = kInvalidCost;
+                    continue;
+                }
                 int acc = 0;
-                for (int xx = x0; xx <= x1; ++xx) acc += buf.cost.slice(xx, y)[di];
-                dst[di] = static_cast<uint16_t>(acc / denom);
+                int count = 0;
+                for (int xx = x0; xx <= x1; ++xx) {
+                    if (d < buf.range.dmin.at(xx, y) || d >= buf.range.dmax.at(xx, y)) {
+                        continue;
+                    }
+                    const uint16_t c = buf.cost.slice(xx, y)[di];
+                    if (c == kInvalidCost) continue;
+                    acc += c;
+                    ++count;
+                }
+                dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
             }
         }
     }
@@ -90,12 +106,27 @@ void CostAggregator::aggregate_hv(PipelineBuffers& buf,
             const int i = y * w + x;
             const int y0 = y - Uarm[i];
             const int y1 = y + Darm[i];
-            const int denom = (y1 - y0 + 1);
+            const int lo_c = buf.range.dmin.at(x, y);
+            const int hi_c = buf.range.dmax.at(x, y);
             uint16_t* dst = buf.cost.slice(x, y);
             for (int di = 0; di < D; ++di) {
+                const int d = d0 + di;
+                if (d < lo_c || d >= hi_c) {
+                    dst[di] = kInvalidCost;
+                    continue;
+                }
                 int acc = 0;
-                for (int yy = y0; yy <= y1; ++yy) acc += tmp.slice(x, yy)[di];
-                dst[di] = static_cast<uint16_t>(acc / denom);
+                int count = 0;
+                for (int yy = y0; yy <= y1; ++yy) {
+                    if (d < buf.range.dmin.at(x, yy) || d >= buf.range.dmax.at(x, yy)) {
+                        continue;
+                    }
+                    const uint16_t c = tmp.slice(x, yy)[di];
+                    if (c == kInvalidCost) continue;
+                    acc += c;
+                    ++count;
+                }
+                dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
             }
         }
     }

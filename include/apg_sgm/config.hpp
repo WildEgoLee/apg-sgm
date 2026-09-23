@@ -48,13 +48,13 @@ struct ConfidenceParams {
     float uniqueness_ratio = 0.15f;
     int lr_max_diff = 1;
     float min_texture = 2.f;
+    float reliable_threshold = 0.25f;
 };
 
 struct RefineParams {
     bool enable = false;
     int iterations = 3;
     int random_radius = 4;
-    float conf_threshold = 0.25f;
 };
 
 struct PostParams {
