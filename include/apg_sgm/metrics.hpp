@@ -8,6 +8,22 @@
 
 namespace apg {
 
+struct SupportMetrics {
+    int total = 0;
+    int gt_valid = 0;
+    int visible = 0;
+    int correct_05 = 0;
+    int correct_1 = 0;
+    int correct_2 = 0;
+
+    float precision_05 = 0.0f;
+    float precision_1 = 0.0f;
+    float precision_2 = 0.0f;
+
+    float mean_abs_error = 0.0f;
+    float grid_coverage = 0.0f;
+};
+
 struct StereoMetrics {
     int total_pixels = 0;
     int evaluated_pixels = 0;
@@ -35,12 +51,21 @@ struct StereoMetrics {
     float range_recall_matchable = 0.0f;  // Pixels with xr = xl - round(d) in [0, W)
     float range_recall_visible = 0.0f;    // Matchable & visible in right image (z-buffer unoccluded)
 
+    size_t range_visible_eval_pixels = 0;
+    size_t range_visible_in_pixels = 0;
+    size_t range_matchable_eval_pixels = 0;
+    size_t range_matchable_in_pixels = 0;
+
     // Spatial breakdown of misses among visible GT pixels
     int prior_miss_visible_count = 0;
     int prior_miss_edge = 0;
     int prior_miss_nonedge = 0;
     float prior_miss_edge_ratio = 0.0f;
     float prior_miss_nonedge_ratio = 0.0f;
+
+    // Support extraction metrics
+    bool has_supports = false;
+    SupportMetrics support_metrics;
 
     // Disentangled Refinement & Post-processing metrics (evaluated on identical pixel sets)
     bool has_refine_stats = false;
@@ -54,6 +79,13 @@ struct StereoMetrics {
     float refine_changed_ratio = 0.0f;   // fraction where |d_after - d_before| > 1e-4
 };
 
+SupportMetrics evaluate_supports(
+    const std::vector<SupportMatch>& supports,
+    const Image32f& gt,
+    const Image8* vis_mask = nullptr,
+    float max_valid_gt = 1e5f,
+    int cell_size = 16);
+
 StereoMetrics evaluate_stereo(
     const Image32f& est,
     const Image32f& gt,
@@ -61,6 +93,7 @@ StereoMetrics evaluate_stereo(
     const Image32f* d_before_refine = nullptr,
     const Image32f* d_after_refine = nullptr,
     const Image8* vis_mask = nullptr,
-    float max_valid_gt = 1e5f);
+    float max_valid_gt = 1e5f,
+    const std::vector<SupportMatch>* supports = nullptr);
 
 } // namespace apg

@@ -94,6 +94,7 @@ struct PipelineBuffers {
     std::vector<uint64_t> census_right64;
 
     SearchRange range;
+    std::vector<SupportMatch> supports;
     size_t support_count = 0;
     Image32f d_prior;
     Image32f prior_confidence;

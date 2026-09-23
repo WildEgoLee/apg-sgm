@@ -5,6 +5,91 @@
 
 namespace apg {
 
+SupportMetrics evaluate_supports(
+    const std::vector<SupportMatch>& supports,
+    const Image32f& gt,
+    const Image8* vis_mask,
+    float max_valid_gt,
+    int cell_size) {
+    SupportMetrics sm;
+    sm.total = static_cast<int>(supports.size());
+    if (supports.empty() || gt.empty()) return sm;
+
+    const int w = gt.width();
+    const int h = gt.height();
+    const int gw = (w + cell_size - 1) / cell_size;
+    const int gh = (h + cell_size - 1) / cell_size;
+    const int n_cells = gw * gh;
+
+    // Track which grid cells have visible GT
+    std::vector<uint8_t> cell_has_vis_gt(n_cells, 0);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float g = gt.at(x, y);
+            if (!std::isfinite(g) || g < 0.0f || g >= max_valid_gt) continue;
+            const int xr = x - static_cast<int>(std::round(g));
+            const bool is_matchable = (xr >= 0 && xr < w);
+            const bool is_visible = (vis_mask && !vis_mask->empty()) ? (vis_mask->at(x, y) >= 200) : is_matchable;
+            if (is_visible) {
+                const int gx = x / cell_size;
+                const int gy = y / cell_size;
+                if (gx < gw && gy < gh) {
+                    cell_has_vis_gt[gy * gw + gx] = 1;
+                }
+            }
+        }
+    }
+    int total_vis_cells = 0;
+    for (uint8_t c : cell_has_vis_gt) total_vis_cells += c;
+
+    std::vector<uint8_t> cell_has_correct_support(n_cells, 0);
+    double sum_abs_err = 0.0;
+
+    for (const auto& s : supports) {
+        if (s.x < 0 || s.x >= w || s.y < 0 || s.y >= h) continue;
+        const float g = gt.at(s.x, s.y);
+        if (!std::isfinite(g) || g < 0.0f || g >= max_valid_gt) continue;
+
+        sm.gt_valid++;
+        const int xr = s.x - static_cast<int>(std::round(g));
+        const bool is_matchable = (xr >= 0 && xr < w);
+        const bool is_visible = (vis_mask && !vis_mask->empty()) ? (vis_mask->at(s.x, s.y) >= 200) : is_matchable;
+        if (is_visible) sm.visible++;
+
+        const float err = std::abs(s.disparity - g);
+        sum_abs_err += err;
+
+        if (err <= 0.5f) sm.correct_05++;
+        if (err <= 1.0f) {
+            sm.correct_1++;
+            const int gx = s.x / cell_size;
+            const int gy = s.y / cell_size;
+            if (gx < gw && gy < gh) {
+                cell_has_correct_support[gy * gw + gx] = 1;
+            }
+        }
+        if (err <= 2.0f) sm.correct_2++;
+    }
+
+    if (sm.gt_valid > 0) {
+        sm.precision_05 = static_cast<float>(sm.correct_05) / static_cast<float>(sm.gt_valid);
+        sm.precision_1 = static_cast<float>(sm.correct_1) / static_cast<float>(sm.gt_valid);
+        sm.precision_2 = static_cast<float>(sm.correct_2) / static_cast<float>(sm.gt_valid);
+        sm.mean_abs_error = static_cast<float>(sum_abs_err / sm.gt_valid);
+    }
+
+    int correct_cells = 0;
+    for (int i = 0; i < n_cells; ++i) {
+        if (cell_has_vis_gt[i] && cell_has_correct_support[i]) {
+            correct_cells++;
+        }
+    }
+    if (total_vis_cells > 0) {
+        sm.grid_coverage = static_cast<float>(correct_cells) / static_cast<float>(total_vis_cells);
+    }
+    return sm;
+}
+
 StereoMetrics evaluate_stereo(
     const Image32f& est,
     const Image32f& gt,
@@ -12,7 +97,8 @@ StereoMetrics evaluate_stereo(
     const Image32f* d_before_refine,
     const Image32f* d_after_refine,
     const Image8* vis_mask,
-    float max_valid_gt) {
+    float max_valid_gt,
+    const std::vector<SupportMatch>* supports) {
 
     StereoMetrics m;
     const int w = est.width();
@@ -207,9 +293,15 @@ StereoMetrics evaluate_stereo(
     }
 
     if (range) {
+        m.has_range = true;
         m.range_recall_all = eval_all > 0 ? static_cast<float>(in_range_all) / eval_all : 0.0f;
         m.range_recall_matchable = eval_matchable > 0 ? static_cast<float>(in_range_matchable) / eval_matchable : 0.0f;
         m.range_recall_visible = eval_visible > 0 ? static_cast<float>(in_range_visible) / eval_visible : 0.0f;
+
+        m.range_visible_eval_pixels = static_cast<size_t>(eval_visible);
+        m.range_visible_in_pixels = static_cast<size_t>(in_range_visible);
+        m.range_matchable_eval_pixels = static_cast<size_t>(eval_matchable);
+        m.range_matchable_in_pixels = static_cast<size_t>(in_range_matchable);
 
         m.prior_miss_visible_count = prior_miss_visible;
         m.prior_miss_edge = prior_miss_edge;
@@ -218,6 +310,11 @@ StereoMetrics evaluate_stereo(
             m.prior_miss_edge_ratio = static_cast<float>(prior_miss_edge) / prior_miss_visible;
             m.prior_miss_nonedge_ratio = static_cast<float>(prior_miss_nonedge) / prior_miss_visible;
         }
+    }
+
+    if (supports && !supports->empty()) {
+        m.has_supports = true;
+        m.support_metrics = evaluate_supports(*supports, gt, vis_mask, max_valid_gt);
     }
 
     if (m.valid_pixels > 0) {

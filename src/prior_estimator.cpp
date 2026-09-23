@@ -8,28 +8,29 @@ namespace apg {
 
 std::vector<SupportMatch> PriorEstimator::extract_supports(const PipelineConfig& cfg,
                                                            const PipelineBuffers& buf) const {
-    std::vector<SupportMatch> out;
     const int w = buf.left_gray.width();
     const int h = buf.left_gray.height();
     const int d0 = cfg.min_disparity;
     const int d1 = cfg.max_disparity;
     const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
     const int step = 2;
+
     constexpr int cell = 16;
     const int gw = (w + cell - 1) / cell;
     const int gh = (h + cell - 1) / cell;
     const int n_cells = gw * gh;
-    const int max_per_cell = std::max(4, (cfg.prior.max_supports + n_cells - 1) / std::max(1, n_cells));
-    std::vector<int> cell_counts(n_cells, 0);
+    const int hard_max = cfg.prior.max_supports;
 
-    out.reserve(std::min(static_cast<size_t>(cfg.prior.max_supports * 2), static_cast<size_t>(n_cells * max_per_cell)));
+    // Per-cell candidate collections
+    std::vector<std::vector<SupportMatch>> cell_candidates(n_cells);
+    const int max_cand_per_cell = std::max(8, (hard_max * 2 + n_cells - 1) / std::max(1, n_cells));
 
     for (int y = 2; y < h - 2; y += step) {
         const int gy = clampi(y / cell, 0, gh - 1);
         for (int x = 2; x < w - 2; x += step) {
             const int gx = clampi(x / cell, 0, gw - 1);
             const int ci = gy * gw + gx;
-            if (cell_counts[ci] >= max_per_cell) continue;
+            if (static_cast<int>(cell_candidates[ci].size()) >= max_cand_per_cell) continue;
 
             const int tex = static_cast<int>(buf.left_gx.at(x, y)) + static_cast<int>(buf.left_gy.at(x, y));
             if (tex < cfg.prior.texture_threshold) continue;
@@ -85,10 +86,40 @@ std::vector<SupportMatch> PriorEstimator::extract_supports(const PipelineConfig&
             m.y = y;
             m.disparity = static_cast<float>(best_d);
             m.confidence = uniq;
-            out.push_back(m);
-            cell_counts[ci]++;
+            cell_candidates[ci].push_back(m);
         }
     }
+
+    // Stratified budget allocation:
+    // 1) Spatially uniform distribution across all cells (no top/bottom starvation)
+    // 2) out.size() <= hard_max (strictly honoring max_supports)
+    std::vector<SupportMatch> out;
+    out.reserve(std::min(static_cast<size_t>(hard_max), static_cast<size_t>(n_cells * 4)));
+    std::vector<int> taken(n_cells, 0);
+
+    // Pass 1: Base quota for each cell
+    const int base_quota = std::max(1, hard_max / std::max(1, n_cells));
+    for (int i = 0; i < n_cells && static_cast<int>(out.size()) < hard_max; ++i) {
+        const int take = std::min(base_quota, static_cast<int>(cell_candidates[i].size()));
+        for (int k = 0; k < take && static_cast<int>(out.size()) < hard_max; ++k) {
+            out.push_back(cell_candidates[i][k]);
+            taken[i]++;
+        }
+    }
+
+    // Pass 2: Redistribution of remaining budget in round-robin fashion across cells that have remaining candidates
+    bool added = true;
+    while (added && static_cast<int>(out.size()) < hard_max) {
+        added = false;
+        for (int i = 0; i < n_cells && static_cast<int>(out.size()) < hard_max; ++i) {
+            if (taken[i] < static_cast<int>(cell_candidates[i].size())) {
+                out.push_back(cell_candidates[i][taken[i]]);
+                taken[i]++;
+                added = true;
+            }
+        }
+    }
+
     return out;
 }
 
@@ -342,13 +373,14 @@ void PriorEstimator::estimate(const PipelineConfig& cfg, PipelineBuffers& buf) c
         }
     }
     buf.d_prior = Image32f(w, h, -1.f);
+    buf.supports.clear();
     buf.support_count = 0;
     if (!cfg.prior.enable) return;
 
-    auto supports = extract_supports(cfg, buf);
-    buf.support_count = supports.size();
-    if (static_cast<int>(supports.size()) < cfg.prior.min_supports) return;
-    interpolate_prior(supports, buf);
+    buf.supports = extract_supports(cfg, buf);
+    buf.support_count = buf.supports.size();
+    if (static_cast<int>(buf.supports.size()) < cfg.prior.min_supports) return;
+    interpolate_prior(buf.supports, buf);
     apply_search_range(cfg, buf);
 }
 
