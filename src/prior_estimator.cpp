@@ -87,6 +87,8 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
     buf.d_prior = Image32f(w, h, -1.f);
     buf.prior_confidence = Image32f(w, h, 0.f);
     buf.prior_spread = Image32f(w, h, 999.f);
+    buf.d_prior_min = Image32f(w, h, -1.f);
+    buf.d_prior_max = Image32f(w, h, -1.f);
     if (supports.empty()) return;
 
     constexpr int cell = 16;
@@ -104,6 +106,8 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
     std::vector<float> grid_disp(n_cells, -1.f);
     std::vector<float> grid_conf(n_cells, 0.f);
     std::vector<float> grid_spread(n_cells, -1.f);
+    std::vector<float> grid_dmin(n_cells, -1.f);
+    std::vector<float> grid_dmax(n_cells, -1.f);
 
     for (int i = 0; i < n_cells; ++i) {
         auto& pts = cell_supports[i];
@@ -112,6 +116,10 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
         std::sort(pts.begin(), pts.end(), [](const auto& a, const auto& b) {
             return a.first < b.first;
         });
+
+        grid_dmin[i] = pts.front().first;
+        grid_dmax[i] = pts.back().first;
+        const float intra_span = grid_dmax[i] - grid_dmin[i];
 
         float total_w = 0.f;
         for (const auto& p : pts) total_w += p.second;
@@ -148,7 +156,7 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
                 break;
             }
         }
-        grid_spread[i] = dev_med;
+        grid_spread[i] = std::max(dev_med * 1.4826f, intra_span * 0.5f);
 
         const float mean_conf = total_w / static_cast<float>(pts.size());
         const float count_factor = clampf(static_cast<float>(pts.size()) / 3.f, 0.3f, 1.f);
@@ -159,11 +167,14 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
         std::vector<float> nxt_d = grid_disp;
         std::vector<float> nxt_c = grid_conf;
         std::vector<float> nxt_s = grid_spread;
+        std::vector<float> nxt_min = grid_dmin;
+        std::vector<float> nxt_max = grid_dmax;
         for (int gy = 0; gy < gh; ++gy) {
             for (int gx = 0; gx < gw; ++gx) {
                 const int i = gy * gw + gx;
                 if (grid_disp[i] >= 0.f) continue;
                 float ad = 0.f, ac = 0.f, as = 0.f, ww = 0.f;
+                float cur_min = 1e9f, cur_max = -1e9f;
                 for (int oy = -1; oy <= 1; ++oy) {
                     for (int ox = -1; ox <= 1; ++ox) {
                         const int nx = gx + ox, ny = gy + oy;
@@ -174,6 +185,8 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
                         ad += v;
                         ac += grid_conf[ni];
                         as += (grid_spread[ni] >= 0.f ? grid_spread[ni] : 8.f);
+                        cur_min = std::min(cur_min, grid_dmin[ni] >= 0.f ? grid_dmin[ni] : v);
+                        cur_max = std::max(cur_max, grid_dmax[ni] >= 0.f ? grid_dmax[ni] : v);
                         ww += 1.f;
                     }
                 }
@@ -181,12 +194,16 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
                     nxt_d[i] = ad / ww;
                     nxt_c[i] = (ac / ww) * 0.75f; // decay confidence for hole filled cells
                     nxt_s[i] = as / ww;
+                    nxt_min[i] = cur_min;
+                    nxt_max[i] = cur_max;
                 }
             }
         }
         grid_disp.swap(nxt_d);
         grid_conf.swap(nxt_c);
         grid_spread.swap(nxt_s);
+        grid_dmin.swap(nxt_min);
+        grid_dmax.swap(nxt_max);
     };
     for (int i = 0; i < 8; ++i) fill_grids();
 
@@ -216,19 +233,36 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
             const float ww = w00 + w10 + w01 + w11;
 
             if (ww > 1e-6f) {
-                buf.d_prior.at(x, y) =
+                const float dp =
                     (w00 * pick(grid_disp[i00]) + w10 * pick(grid_disp[i10]) +
                      w01 * pick(grid_disp[i01]) + w11 * pick(grid_disp[i11])) / ww;
+                buf.d_prior.at(x, y) = dp;
                 buf.prior_confidence.at(x, y) =
                     (w00 * grid_conf[i00] + w10 * grid_conf[i10] +
                      w01 * grid_conf[i01] + w11 * grid_conf[i11]) / ww;
-                buf.prior_spread.at(x, y) =
+
+                float cmin = 1e9f, cmax = -1e9f;
+                for (int idx : {i00, i10, i01, i11}) {
+                    if (grid_disp[idx] >= 0.f) {
+                        const float mn = grid_dmin[idx] >= 0.f ? grid_dmin[idx] : grid_disp[idx];
+                        const float mx = grid_dmax[idx] >= 0.f ? grid_dmax[idx] : grid_disp[idx];
+                        cmin = std::min(cmin, mn);
+                        cmax = std::max(cmax, mx);
+                    }
+                }
+                const float local_spread =
                     (w00 * pick(grid_spread[i00]) + w10 * pick(grid_spread[i10]) +
                      w01 * pick(grid_spread[i01]) + w11 * pick(grid_spread[i11])) / ww;
+                buf.prior_spread.at(x, y) = local_spread;
+
+                buf.d_prior_min.at(x, y) = (cmin <= cmax) ? std::min(cmin, dp) : dp;
+                buf.d_prior_max.at(x, y) = (cmin <= cmax) ? std::max(cmax, dp) : dp;
             } else {
                 buf.d_prior.at(x, y) = -1.f;
                 buf.prior_confidence.at(x, y) = 0.f;
                 buf.prior_spread.at(x, y) = 999.f;
+                buf.d_prior_min.at(x, y) = -1.f;
+                buf.d_prior_max.at(x, y) = -1.f;
             }
         }
     }
@@ -248,6 +282,8 @@ void PriorEstimator::apply_search_range(const PipelineConfig& cfg, PipelineBuffe
 
             const float conf = !buf.prior_confidence.empty() ? buf.prior_confidence.at(x, y) : 0.f;
             const float spread = !buf.prior_spread.empty() ? buf.prior_spread.at(x, y) : 999.f;
+            const float pmin = (!buf.d_prior_min.empty() && buf.d_prior_min.at(x, y) >= 0.f) ? buf.d_prior_min.at(x, y) : dp;
+            const float pmax = (!buf.d_prior_max.empty() && buf.d_prior_max.at(x, y) >= 0.f) ? buf.d_prior_max.at(x, y) : dp;
 
             int R = default_R;
             if (conf < 0.25f) {
@@ -260,12 +296,16 @@ void PriorEstimator::apply_search_range(const PipelineConfig& cfg, PipelineBuffe
                 R = static_cast<int>(18.f + 2.0f * spread + 0.5f);
             } else {
                 // High spread, depth edge or uncertain transition: conservative search
-                R = std::max(28, static_cast<int>(20.f + 2.5f * spread + 0.5f));
+                R = std::max(24, static_cast<int>(16.f + 2.0f * spread + 0.5f));
             }
             R = std::min(R, global_D);
 
-            const int lo = static_cast<int>(std::floor(dp)) - R;
-            int hi = static_cast<int>(std::ceil(dp)) + R + 1;
+            constexpr int kEnvelopeMargin = 4;
+            const int bound_lo = static_cast<int>(std::floor(pmin)) - kEnvelopeMargin;
+            const int bound_hi = static_cast<int>(std::ceil(pmax)) + kEnvelopeMargin + 1;
+
+            const int lo = std::min(static_cast<int>(std::floor(dp)) - R, bound_lo);
+            int hi = std::max(static_cast<int>(std::ceil(dp)) + R + 1, bound_hi);
             hi = std::min(hi, x + 1);
             buf.range.set_pixel(x, y, lo, hi);
         }

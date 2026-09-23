@@ -435,6 +435,103 @@ int main() {
         std::cout << "  PASSED (Accuracy Gate satisfied: EPE < 0.5 px, Bad-1.0 < 2.0%)\n";
     }
 
-    std::cout << "\n>>> ALL 8 SYNTHETIC REGRESSION TESTS PASSED! <<<\n";
+    // -------------------------------------------------------------
+    // Test 8: Multi-Plane Depth Step Prior Accuracy & Visible Recall Gate (CI Gate)
+    // -------------------------------------------------------------
+    {
+        std::cout << "\n[Test 8] Multi-Plane Depth Step Prior Accuracy & Visible Recall Gate (CI Gate)..." << std::endl;
+        const int W = 160, H = 120, DMAX = 32;
+        Image8 left(W, H, 1);
+        Image8 right(W, H, 1);
+        Image32f gt(W, H, 6.0f);
+        Image8 vis(W, H, 1);
+
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                if (y >= 35 && y <= 75 && x >= 45 && x <= 95) {
+                    gt.at(x, y) = 16.0f;
+                } else if (y >= 20 && y <= 90 && x >= 115 && x <= 130) {
+                    gt.at(x, y) = 22.0f;
+                } else {
+                    gt.at(x, y) = 6.0f;
+                }
+                left.at(x, y) = rich_texture(x, y);
+            }
+        }
+
+        std::vector<int> owner_xl(static_cast<size_t>(W) * H, -1);
+        std::vector<float> z_buf(static_cast<size_t>(W) * H, -1.0f);
+        for (int y = 0; y < H; ++y) {
+            for (int xl = 0; xl < W; ++xl) {
+                const float d_val = gt.at(xl, y);
+                const int d_int = static_cast<int>(std::round(d_val));
+                const int xr = xl - d_int;
+                if (xr >= 0 && xr < W) {
+                    if (d_val > z_buf[y * W + xr]) {
+                        z_buf[y * W + xr] = d_val;
+                        owner_xl[y * W + xr] = xl;
+                        right.at(xr, y) = left.at(xl, y);
+                    }
+                }
+            }
+        }
+
+        for (int y = 0; y < H; ++y) {
+            for (int xl = 0; xl < W; ++xl) {
+                const float d_val = gt.at(xl, y);
+                const int d_int = static_cast<int>(std::round(d_val));
+                const int xr = xl - d_int;
+                if (xr >= 0 && xr < W && owner_xl[y * W + xr] == xl) {
+                    vis.at(xl, y) = 255;
+                }
+            }
+        }
+
+        // Run Baseline D (without prior)
+        auto cfgD = make_ablation_config(AblationId::D_Adaptive4, DMAX);
+        StereoMatcher matcherD(cfgD);
+        PipelineBuffers bufsD;
+        PipelineStats statsD;
+        if (!matcherD.compute(left, right, bufsD, &statsD)) {
+            std::cerr << "  FAILED: matcher D compute failed: " << matcherD.last_error() << "\n";
+            return 1;
+        }
+        auto mD = evaluate_stereo(bufsD.disparity, gt, nullptr, nullptr, nullptr, &vis, static_cast<float>(DMAX));
+
+        // Run Ablation E (with prior)
+        auto cfgE = make_ablation_config(AblationId::E_Prior4, DMAX);
+        StereoMatcher matcherE(cfgE);
+        PipelineBuffers bufsE;
+        PipelineStats statsE;
+        if (!matcherE.compute(left, right, bufsE, &statsE)) {
+            std::cerr << "  FAILED: matcher E compute failed: " << matcherE.last_error() << "\n";
+            return 1;
+        }
+        auto mE = evaluate_stereo(bufsE.disparity, gt, &bufsE.range, nullptr, nullptr, &vis, static_cast<float>(DMAX));
+
+        std::cout << "  Baseline D: EPE=" << mD.epe << " px, Bad-2.0=" << mD.bad_2_0 << "%\n";
+        std::cout << "  Ablation E: EPE=" << mE.epe << " px, Bad-2.0=" << mE.bad_2_0
+                  << "%, Rec(vis)=" << (mE.range_recall_visible * 100.0f) << "%\n";
+        std::cout << "  Search width: D_bar=" << statsE.mean_search_width << " vs global D=" << DMAX << "\n";
+
+        // Assert accuracy gates
+        if (mE.range_recall_visible < 0.995f) {
+            std::cerr << "  FAILED: Prior visible range recall " << mE.range_recall_visible
+                      << " is below 99.5% gate!\n";
+            return 1;
+        }
+        if (mE.bad_2_0 > mD.bad_2_0 + 0.5f) {
+            std::cerr << "  FAILED: Bad-2 degraded from D (" << mD.bad_2_0
+                      << "%) to E (" << mE.bad_2_0 << "%) by more than 0.5%!\n";
+            return 1;
+        }
+        if (statsE.mean_search_width >= statsD.mean_search_width) {
+            std::cerr << "  FAILED: Prior did not reduce mean search width!\n";
+            return 1;
+        }
+        std::cout << "  PASSED (Accuracy Gate satisfied: Rec(vis) >= 99.5%, Bad2 degradation <= 0.5%)\n";
+    }
+
+    std::cout << "\n>>> ALL 9 SYNTHETIC REGRESSION TESTS PASSED! <<<\n";
     return 0;
 }

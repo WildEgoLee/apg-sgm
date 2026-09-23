@@ -98,6 +98,8 @@ struct PipelineBuffers {
     Image32f d_prior;
     Image32f prior_confidence;
     Image32f prior_spread;
+    Image32f d_prior_min;
+    Image32f d_prior_max;
     CostVolume cost;
     CostVolume32 cost32;
     CostVolume cost_right;
