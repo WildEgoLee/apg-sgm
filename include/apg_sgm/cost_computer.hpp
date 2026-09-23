@@ -2,6 +2,7 @@
 
 #include "apg_sgm/buffers.hpp"
 #include "apg_sgm/config.hpp"
+#include "apg_sgm/packed_volume.hpp"
 
 namespace apg {
 
@@ -11,6 +12,9 @@ public:
                      PipelineBuffers& buf) const;
 
     void compute_volume(const PipelineConfig& cfg, PipelineBuffers& buf) const;
+
+    void compute_volume_packed(const PipelineConfig& cfg, const PipelineBuffers& buf,
+                               PackedCostVolume16& packed_cost) const;
 
     static uint32_t symmetric_census9x7(const Image8& gray, int x, int y);
     static uint64_t census9x7(const Image8& gray, int x, int y);

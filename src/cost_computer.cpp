@@ -184,4 +184,69 @@ void CostComputer::compute_volume(const PipelineConfig& cfg, PipelineBuffers& bu
     }
 }
 
+void CostComputer::compute_volume_packed(const PipelineConfig& cfg,
+                                         const PipelineBuffers& buf,
+                                         PackedCostVolume16& packed_cost) const {
+    const int w = buf.left_gray.width();
+    const int h = buf.left_gray.height();
+    packed_cost.allocate(buf.range, kInvalidCost);
+
+    const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
+    const bool use_ad = cfg.cost.use_ad;
+    const bool use_grad = cfg.cost.use_grad;
+    const float lc = std::max(cfg.cost.lambda_census, 1e-3f);
+    const float la = std::max(cfg.cost.lambda_ad, 1e-3f);
+    const float lg = std::max(cfg.cost.lambda_grad, 1e-3f);
+    const float eta = cfg.cost.eta_ad;
+    const float mu = cfg.cost.mu_grad;
+    const float norm = 1.f + (use_ad ? eta : 0.f) + (use_grad ? mu : 0.f);
+    const float scale = static_cast<float>(cfg.cost.cost_max) / std::max(norm, 1e-6f);
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int lo = buf.range.dmin.at(x, y);
+            const int hi = buf.range.dmax.at(x, y);
+            const int D_p = (hi > lo) ? (hi - lo) : 0;
+            if (D_p <= 0) continue;
+
+            uint16_t* slice = packed_cost.slice(x, y);
+            for (int di = 0; di < D_p; ++di) {
+                const int d = lo + di;
+                const int xr = x - d;
+                if (xr < 0 || xr >= w) {
+                    slice[di] = kInvalidCost;
+                    continue;
+                }
+                float ccensus = 0.f;
+                if (sym) {
+                    ccensus = static_cast<float>(
+                        popcount32(buf.census_left[y * w + x] ^ buf.census_right[y * w + xr]));
+                } else {
+                    ccensus = static_cast<float>(
+                        popcount64(buf.census_left64[y * w + x] ^ buf.census_right64[y * w + xr]));
+                }
+                float c = 1.f - std::exp(-ccensus / lc);
+                if (use_ad) {
+                    const int ad = std::abs(static_cast<int>(buf.left_gray.at(x, y)) -
+                                            static_cast<int>(buf.right_gray.at(xr, y)));
+                    c += eta * (1.f - std::exp(-static_cast<float>(ad) / la));
+                }
+                if (use_grad) {
+                    const int g =
+                        std::abs(static_cast<int>(buf.left_gx.at(x, y)) -
+                                 static_cast<int>(buf.right_gx.at(xr, y))) +
+                        std::abs(static_cast<int>(buf.left_gy.at(x, y)) -
+                                 static_cast<int>(buf.right_gy.at(xr, y)));
+                    c += mu * (1.f - std::exp(-static_cast<float>(g) / lg));
+                }
+                const int q = static_cast<int>(c * scale + 0.5f);
+                slice[di] = static_cast<uint16_t>(clampi(q, 0, cfg.cost.cost_max));
+            }
+        }
+    }
+}
+
 } // namespace apg
