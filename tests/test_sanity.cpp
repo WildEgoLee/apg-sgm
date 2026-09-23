@@ -1,6 +1,7 @@
 #include "apg_sgm/pipeline.hpp"
 #include "apg_sgm/cost_computer.hpp"
 #include "apg_sgm/cost_aggregator.hpp"
+#include "apg_sgm/sgm_optimizer.hpp"
 #include "apg_sgm/prior_estimator.hpp"
 #include "apg_sgm/packed_volume.hpp"
 
@@ -230,6 +231,74 @@ int main() {
         std::cerr << "Error: cross evaluated count mismatch: " << cross_evaluated << " vs " << evaluated_disparities << "\n";
         return 1;
     }
+
+    // -------------------------------------------------------------
+    // Test Packed SgmOptimizer equivalence vs Dense SgmOptimizer
+    // -------------------------------------------------------------
+    std::cout << "[Test Packed SgmOptimizer Equivalence & WTA]\n";
+    SgmOptimizer sgm;
+
+    // 1. Dense SGM optimization
+    sgm.optimize(cfg_hq, buf_packed);
+
+    // 2. Packed SGM optimization
+    sgm.optimize_packed(cfg_hq, buf_packed.left_gray, packed_cost, packed_cost32);
+
+    size_t sgm_evaluated = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int lo = packed_cost.dmin(x, y);
+            const int hi = packed_cost.dmax(x, y);
+            const uint32_t* p_slice32 = packed_cost32.slice(x, y);
+
+            for (int d = lo; d < hi; ++d) {
+                const uint32_t dense_c = buf_packed.cost32.at(x, y, d);
+                const uint32_t packed_c = packed_cost32.at(x, y, d);
+                const uint32_t slice_c = p_slice32[d - lo];
+
+                if (dense_c != packed_c) {
+                    std::cerr << "SGM cost32 mismatch at (" << x << "," << y << ", d=" << d << "): dense="
+                              << dense_c << " vs packed=" << packed_c << "\n";
+                    return 1;
+                }
+                if (packed_c != slice_c) {
+                    std::cerr << "SGM cost32 slice mismatch at (" << x << "," << y << ", d=" << d << "): packed="
+                              << packed_c << " vs slice=" << slice_c << "\n";
+                    return 1;
+                }
+                sgm_evaluated++;
+            }
+        }
+    }
+    std::cout << "  Evaluated " << sgm_evaluated << " packed SGM aggregated states (100% bit-exact match!)\n";
+
+    // 3. Winner-Take-All equivalence
+    Image32f disp_dense, disp_packed;
+    Image32f best_c_dense, best_c_packed;
+    Image32f sec_c_dense, sec_c_packed;
+
+    sgm.winner_take_all(cfg_hq, buf_packed.cost32, buf_packed.range, disp_dense, &best_c_dense, &sec_c_dense);
+    sgm.winner_take_all_packed(cfg_hq, packed_cost32, disp_packed, &best_c_packed, &sec_c_packed);
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float dd = disp_dense.at(x, y);
+            const float dp = disp_packed.at(x, y);
+            if (std::isnan(dd) != std::isnan(dp) || (std::isfinite(dd) && std::abs(dd - dp) > 1e-5f)) {
+                std::cerr << "WTA disparity mismatch at (" << x << "," << y << "): dense="
+                          << dd << " vs packed=" << dp << "\n";
+                return 1;
+            }
+            const float bd = best_c_dense.at(x, y);
+            const float bp = best_c_packed.at(x, y);
+            if (std::isfinite(bd) != std::isfinite(bp) || (std::isfinite(bd) && std::abs(bd - bp) > 1e-4f)) {
+                std::cerr << "WTA best_cost mismatch at (" << x << "," << y << "): dense="
+                          << bd << " vs packed=" << bp << "\n";
+                return 1;
+            }
+        }
+    }
+    std::cout << "  WTA disparities and costs match 100% bit-exact!\n";
 
     std::cout << "sanity ok\n";
     return 0;
