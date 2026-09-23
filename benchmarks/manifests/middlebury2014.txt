@@ -1,0 +1,18 @@
+# APG-SGM Middlebury 2014 Dataset Manifest
+# Generated with scale=1.0
+# Format: case_name left_img right_img gt_disp [dmax] [dmin] [vis_mask]
+Adirondack ../data/middlebury2014/Adirondack_left.pgm ../data/middlebury2014/Adirondack_right.pgm ../data/middlebury2014/Adirondack_gt.pfm 80 0 ../data/middlebury2014/Adirondack_vis.pgm
+ArtL ../data/middlebury2014/ArtL_left.pgm ../data/middlebury2014/ArtL_right.pgm ../data/middlebury2014/ArtL_gt.pfm 64 0 ../data/middlebury2014/ArtL_vis.pgm
+Jadeplant ../data/middlebury2014/Jadeplant_left.pgm ../data/middlebury2014/Jadeplant_right.pgm ../data/middlebury2014/Jadeplant_gt.pfm 160 0 ../data/middlebury2014/Jadeplant_vis.pgm
+Motorcycle ../data/middlebury2014/Motorcycle_left.pgm ../data/middlebury2014/Motorcycle_right.pgm ../data/middlebury2014/Motorcycle_gt.pfm 80 0 ../data/middlebury2014/Motorcycle_vis.pgm
+MotorcycleE ../data/middlebury2014/MotorcycleE_left.pgm ../data/middlebury2014/MotorcycleE_right.pgm ../data/middlebury2014/MotorcycleE_gt.pfm 80 0 ../data/middlebury2014/MotorcycleE_vis.pgm
+Piano ../data/middlebury2014/Piano_left.pgm ../data/middlebury2014/Piano_right.pgm ../data/middlebury2014/Piano_gt.pfm 80 0 ../data/middlebury2014/Piano_vis.pgm
+PianoL ../data/middlebury2014/PianoL_left.pgm ../data/middlebury2014/PianoL_right.pgm ../data/middlebury2014/PianoL_gt.pfm 80 0 ../data/middlebury2014/PianoL_vis.pgm
+Pipes ../data/middlebury2014/Pipes_left.pgm ../data/middlebury2014/Pipes_right.pgm ../data/middlebury2014/Pipes_gt.pfm 80 0 ../data/middlebury2014/Pipes_vis.pgm
+Playroom ../data/middlebury2014/Playroom_left.pgm ../data/middlebury2014/Playroom_right.pgm ../data/middlebury2014/Playroom_gt.pfm 96 0 ../data/middlebury2014/Playroom_vis.pgm
+Playtable ../data/middlebury2014/Playtable_left.pgm ../data/middlebury2014/Playtable_right.pgm ../data/middlebury2014/Playtable_gt.pfm 80 0 ../data/middlebury2014/Playtable_vis.pgm
+PlaytableP ../data/middlebury2014/PlaytableP_left.pgm ../data/middlebury2014/PlaytableP_right.pgm ../data/middlebury2014/PlaytableP_gt.pfm 80 0 ../data/middlebury2014/PlaytableP_vis.pgm
+Recycle ../data/middlebury2014/Recycle_left.pgm ../data/middlebury2014/Recycle_right.pgm ../data/middlebury2014/Recycle_gt.pfm 80 0 ../data/middlebury2014/Recycle_vis.pgm
+Shelves ../data/middlebury2014/Shelves_left.pgm ../data/middlebury2014/Shelves_right.pgm ../data/middlebury2014/Shelves_gt.pfm 64 0 ../data/middlebury2014/Shelves_vis.pgm
+Teddy ../data/middlebury2014/Teddy_left.pgm ../data/middlebury2014/Teddy_right.pgm ../data/middlebury2014/Teddy_gt.pfm 64 0 ../data/middlebury2014/Teddy_vis.pgm
+Vintage ../data/middlebury2014/Vintage_left.pgm ../data/middlebury2014/Vintage_right.pgm ../data/middlebury2014/Vintage_gt.pfm 192 0 ../data/middlebury2014/Vintage_vis.pgm

@@ -19,6 +19,8 @@ struct StereoMetrics {
     float bad_1_0 = 0.0f;
     float bad_2_0 = 0.0f;
     float bad_3_0 = 0.0f;
+    float kitti_d1_all = 0.0f; // |diff| > 3.0 px AND |diff| / gt > 0.05 on all valid GT
+    float kitti_d1_noc = 0.0f; // |diff| > 3.0 px AND |diff| / gt > 0.05 on non-occluded (visible) GT
 
     int edge_pixels = 0;
     float edge_epe = 0.0f;

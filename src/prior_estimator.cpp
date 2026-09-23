@@ -15,10 +15,22 @@ std::vector<SupportMatch> PriorEstimator::extract_supports(const PipelineConfig&
     const int d1 = cfg.max_disparity;
     const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
     const int step = 2;
-    out.reserve(static_cast<size_t>(w * h) / (step * step * 8));
+    constexpr int cell = 16;
+    const int gw = (w + cell - 1) / cell;
+    const int gh = (h + cell - 1) / cell;
+    const int n_cells = gw * gh;
+    const int max_per_cell = std::max(4, (cfg.prior.max_supports + n_cells - 1) / std::max(1, n_cells));
+    std::vector<int> cell_counts(n_cells, 0);
+
+    out.reserve(std::min(static_cast<size_t>(cfg.prior.max_supports * 2), static_cast<size_t>(n_cells * max_per_cell)));
 
     for (int y = 2; y < h - 2; y += step) {
+        const int gy = clampi(y / cell, 0, gh - 1);
         for (int x = 2; x < w - 2; x += step) {
+            const int gx = clampi(x / cell, 0, gw - 1);
+            const int ci = gy * gw + gx;
+            if (cell_counts[ci] >= max_per_cell) continue;
+
             const int tex = static_cast<int>(buf.left_gx.at(x, y)) + static_cast<int>(buf.left_gy.at(x, y));
             if (tex < cfg.prior.texture_threshold) continue;
 
@@ -74,7 +86,7 @@ std::vector<SupportMatch> PriorEstimator::extract_supports(const PipelineConfig&
             m.disparity = static_cast<float>(best_d);
             m.confidence = uniq;
             out.push_back(m);
-            if (static_cast<int>(out.size()) >= cfg.prior.max_supports) return out;
+            cell_counts[ci]++;
         }
     }
     return out;
@@ -163,12 +175,13 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
         grid_conf[i] = clampf(mean_conf * count_factor, 0.f, 1.f);
     }
 
-    auto fill_grids = [&]() {
+    auto fill_grids = [&]() -> bool {
         std::vector<float> nxt_d = grid_disp;
         std::vector<float> nxt_c = grid_conf;
         std::vector<float> nxt_s = grid_spread;
         std::vector<float> nxt_min = grid_dmin;
         std::vector<float> nxt_max = grid_dmax;
+        bool changed = false;
         for (int gy = 0; gy < gh; ++gy) {
             for (int gx = 0; gx < gw; ++gx) {
                 const int i = gy * gw + gx;
@@ -192,10 +205,11 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
                 }
                 if (ww > 0.f) {
                     nxt_d[i] = ad / ww;
-                    nxt_c[i] = (ac / ww) * 0.75f; // decay confidence for hole filled cells
+                    nxt_c[i] = (ac / ww) * 0.85f; // decay confidence for hole filled cells
                     nxt_s[i] = as / ww;
                     nxt_min[i] = cur_min;
                     nxt_max[i] = cur_max;
+                    changed = true;
                 }
             }
         }
@@ -204,8 +218,12 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
         grid_spread.swap(nxt_s);
         grid_dmin.swap(nxt_min);
         grid_dmax.swap(nxt_max);
+        return changed;
     };
-    for (int i = 0; i < 8; ++i) fill_grids();
+    const int max_iters = std::max(gw, gh);
+    for (int iter = 0; iter < max_iters; ++iter) {
+        if (!fill_grids()) break;
+    }
 
     for (int y = 0; y < h; ++y) {
         const float fy = (static_cast<float>(y) + 0.5f) / cell - 0.5f;

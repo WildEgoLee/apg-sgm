@@ -165,7 +165,7 @@ int main(int argc, char** argv) {
     }
 
     csv << "case,ablation_id,ablation_name,cost,cross,p2,prior,refine,paths,w,h,dmax,"
-        << "epe,bad_0_5,bad_1_0,bad_2_0,bad_3_0,valid_ratio,lr_fail_ratio,edge_epe,nonedge_epe,"
+        << "epe,bad_0_5,bad_1_0,bad_2_0,bad_3_0,kitti_d1_all,kitti_d1_noc,valid_ratio,lr_fail_ratio,edge_epe,nonedge_epe,"
         << "recall_all,recall_matchable,recall_visible,prior_miss_vis_count,prior_miss_edge_pct,prior_miss_nonedge_pct,"
         << "prior_supports,mean_search_width,mean_geom_width,geom_reduction_ratio,prior_incremental_reduction,total_reduction_ratio,"
         << "cost_bytes,cost32_bytes,peak_bytes,"
@@ -262,6 +262,7 @@ int main(int argc, char** argv) {
             std::cout << "[" << id_str << "] " << std::setw(32) << std::left << desc_str
                       << " | EPE: " << std::setw(6) << std::fixed << std::setprecision(3) << (has_gt ? m.epe : -1.f)
                       << " | Bad2.0: " << std::setw(5) << std::setprecision(1) << (has_gt ? m.bad_2_0 : -1.f) << "%"
+                      << " | D1-all: " << std::setw(5) << std::setprecision(1) << (has_gt ? m.kitti_d1_all : -1.f) << "%"
                       << " | D_bar: " << std::setw(4) << std::setprecision(1) << best_sample.stats.mean_search_width;
             if (cfg.prior.enable && has_gt && m.has_range) {
                 std::cout << " | Rec(vis): " << std::setw(5) << std::setprecision(1) << (m.range_recall_visible * 100.0f) << "%"
@@ -292,6 +293,8 @@ int main(int argc, char** argv) {
                 << (has_gt ? m.bad_1_0 : 0.f) << ","
                 << (has_gt ? m.bad_2_0 : 0.f) << ","
                 << (has_gt ? m.bad_3_0 : 0.f) << ","
+                << (has_gt ? m.kitti_d1_all : 0.f) << ","
+                << (has_gt ? m.kitti_d1_noc : 0.f) << ","
                 << (has_gt ? m.valid_ratio : 0.f) << ","
                 << (has_gt ? m.lr_fail_ratio : 0.f) << ","
                 << (has_gt ? m.edge_epe : 0.f) << ","

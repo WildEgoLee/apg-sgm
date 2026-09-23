@@ -88,7 +88,9 @@ def process_scene(scene_dir: Path, out_dir: Path, scale: float = 1.0, color: boo
 
     im0_path = scene_dir / "im0.png"
     im1_path = scene_dir / "im1.png"
-    disp0_path = scene_dir / "disp0.pfm"
+    disp0_path = scene_dir / "disp0GT.pfm"
+    if not disp0_path.exists():
+        disp0_path = scene_dir / "disp0.pfm"
     mask_path = scene_dir / "mask0nocc.png"
 
     if not im0_path.exists() or not im1_path.exists():
@@ -108,11 +110,12 @@ def process_scene(scene_dir: Path, out_dir: Path, scale: float = 1.0, color: boo
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Disparity search range from calib
+    # Disparity search range from calib:
+    # ndisp is the conservative disparity upper bound (algorithms search 0 .. ndisp-1).
+    # vmin/vmax are tight GT visualization limits and must NOT be used for dmin.
     ndisp = int(calib.get("ndisp", 128))
-    vmin = int(calib.get("vmin", 0))
+    dmin = 0
     dmax = int(np.ceil(ndisp * scale))
-    dmin = int(np.floor(vmin * scale))
     # Align dmax to multiple of 16 for efficient packed/SGM architectures
     dmax_aligned = int(np.ceil(dmax / 16.0) * 16)
 

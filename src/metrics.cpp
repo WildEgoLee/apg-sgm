@@ -28,6 +28,9 @@ StereoMetrics evaluate_stereo(
     int count_1_0 = 0;
     int count_2_0 = 0;
     int count_3_0 = 0;
+    int kitti_d1_all_count = 0;
+    int kitti_d1_noc_count = 0;
+    int eval_noc_count = 0;
 
     int lr_fail_count = 0;
 
@@ -102,7 +105,7 @@ StereoMetrics evaluate_stereo(
 
             const int xr = x - static_cast<int>(std::round(g));
             const bool is_matchable = (xr >= 0 && xr < w);
-            const bool is_visible = (vis_mask && !vis_mask->empty()) ? (vis_mask->at(x, y) > 0) : is_matchable;
+            const bool is_visible = (vis_mask && !vis_mask->empty()) ? (vis_mask->at(x, y) >= 200) : is_matchable;
 
             if (range) {
                 m.has_range = true;
@@ -155,6 +158,14 @@ StereoMetrics evaluate_stereo(
                     m.nonedge_pixels++;
                     sum_nonedge_epe += diff;
                 }
+            }
+
+            const bool is_d1_outlier = (!std::isfinite(e) || e < 0.0f) ||
+                (std::abs(e - g) > 3.0f && (g > 1e-3f ? (std::abs(e - g) / g > 0.05f) : true));
+            if (is_d1_outlier) kitti_d1_all_count++;
+            if (is_visible) {
+                eval_noc_count++;
+                if (is_d1_outlier) kitti_d1_noc_count++;
             }
 
             if (has_refine_data) {
@@ -215,6 +226,13 @@ StereoMetrics evaluate_stereo(
         m.bad_1_0 = static_cast<float>(count_1_0) / static_cast<float>(m.valid_pixels) * 100.0f;
         m.bad_2_0 = static_cast<float>(count_2_0) / static_cast<float>(m.valid_pixels) * 100.0f;
         m.bad_3_0 = static_cast<float>(count_3_0) / static_cast<float>(m.valid_pixels) * 100.0f;
+    }
+
+    if (m.evaluated_pixels > 0) {
+        m.kitti_d1_all = static_cast<float>(kitti_d1_all_count) / static_cast<float>(m.evaluated_pixels) * 100.0f;
+    }
+    if (eval_noc_count > 0) {
+        m.kitti_d1_noc = static_cast<float>(kitti_d1_noc_count) / static_cast<float>(eval_noc_count) * 100.0f;
     }
 
     if (m.edge_pixels > 0) {
