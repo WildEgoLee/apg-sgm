@@ -75,7 +75,7 @@ int main() {
     // -------------------------------------------------------------
     // Test PackedCostVolume equivalence vs Dense CostComputer
     // -------------------------------------------------------------
-    std::cout << "[Test PackedCostVolume Equivalence]\n";
+    std::cout << "[Test PackedCostVolume Equivalence & Shared Layout]\n";
     CostComputer cc;
     PriorEstimator pe;
 
@@ -88,8 +88,17 @@ int main() {
     // 1. Dense compute
     cc.compute_volume(cfg_hq, buf_packed);
 
-    // 2. Packed compute
-    PackedCostVolume16 packed_cost;
+    // 2. Packed compute with explicit shared layout
+    auto shared_layout = PackedVolumeLayout::from_range(buf_packed.range);
+    PackedCostVolume16 packed_cost(shared_layout, kInvalidCost);
+    PackedCostVolume32 packed_cost32(shared_layout, 0);
+
+    // Verify both volumes share identical layout pointer
+    if (packed_cost.layout() != packed_cost32.layout()) {
+        std::cerr << "Error: layout is not shared between packed_cost and packed_cost32!\n";
+        return 1;
+    }
+
     cc.compute_volume_packed(cfg_hq, buf_packed, packed_cost);
 
     const int w = left.width();
@@ -126,11 +135,17 @@ int main() {
     const size_t packed_bytes = packed_cost.bytes();
     const double reduction = 100.0 * (1.0 - static_cast<double>(packed_bytes) / static_cast<double>(dense_bytes));
 
+    const size_t dense_total_bytes = buf_packed.cost.bytes() + buf_packed.cost.bytes() * 2; // cost16 + cost32 (6 WHD)
+    const size_t packed_total_bytes = shared_layout->bytes() + packed_cost.data_bytes() + packed_cost32.data_bytes();
+    const double total_reduction = 100.0 * (1.0 - static_cast<double>(packed_total_bytes) / static_cast<double>(dense_total_bytes));
+
     std::cout << "  Evaluated " << evaluated_disparities << " packed disparity states (100% bit-exact match!)\n";
-    std::cout << "  Dense bytes:  " << dense_bytes << " B\n";
-    std::cout << "  Packed bytes: " << packed_bytes << " B (data=" << packed_cost.data_bytes()
-              << " B, offsets=" << packed_cost.offsets_bytes() << " B)\n";
-    std::cout << "  Memory reduction: " << reduction << "%\n";
+    std::cout << "  Dense cost16:   " << dense_bytes << " B\n";
+    std::cout << "  Packed cost16:  " << packed_bytes << " B (data=" << packed_cost.data_bytes()
+              << " B, layout=" << shared_layout->bytes() << " B)\n";
+    std::cout << "  Single volume reduction: " << reduction << "%\n";
+    std::cout << "  Shared layout dual volume (cost16+cost32): dense=" << dense_total_bytes
+              << " B vs packed=" << packed_total_bytes << " B -> Total memory reduction: " << total_reduction << "%\n";
 
     if (evaluated_disparities == 0) {
         std::cerr << "Error: 0 disparities evaluated in packed test!\n";

@@ -168,7 +168,7 @@ int main(int argc, char** argv) {
         << "epe,bad_0_5,bad_1_0,bad_2_0,bad_3_0,kitti_d1_all,kitti_d1_noc,valid_ratio,lr_fail_ratio,edge_epe,nonedge_epe,"
         << "recall_all,recall_matchable,recall_visible,range_vis_eval_px,range_vis_in_px,range_mat_eval_px,range_mat_in_px,"
         << "prior_miss_vis_count,prior_miss_edge_pct,prior_miss_nonedge_pct,"
-        << "prior_supports,support_p05,support_p1,support_p2,support_mae,grid_coverage,"
+        << "prior_supports,support_p05,support_p1,support_p2,support_p1_vis,support_mae,support_mae_vis,grid_recall_1,"
         << "mean_search_width,mean_geom_width,geom_reduction_ratio,prior_incremental_reduction,total_reduction_ratio,"
         << "cost_bytes,cost32_bytes,peak_bytes,"
         << "reliable_ratio,unreliable_ratio,refine_changed_ratio,refine_epe_delta,post_epe_delta,total_epe_delta,"
@@ -270,8 +270,8 @@ int main(int argc, char** argv) {
             if (cfg.prior.enable && has_gt && m.has_range) {
                 std::cout << " | Rec(vis): " << std::setw(5) << std::setprecision(1) << (m.range_recall_visible * 100.0f) << "%";
                 if (m.has_supports) {
-                    std::cout << " [P@1: " << std::setw(4) << std::setprecision(1) << (m.support_metrics.precision_1 * 100.0f) << "%"
-                              << " Cov: " << std::setw(4) << std::setprecision(1) << (m.support_metrics.grid_coverage * 100.0f) << "%]";
+                    std::cout << " [P@1(vis): " << std::setw(4) << std::setprecision(1) << (m.support_metrics.precision_vis_1 * 100.0f) << "%"
+                              << " Rec(grid): " << std::setw(4) << std::setprecision(1) << (m.support_metrics.grid_recall_1 * 100.0f) << "%]";
                 }
             } else {
                 std::cout << " | Recall: N/A        ";
@@ -326,13 +326,15 @@ int main(int argc, char** argv) {
             if (cfg.prior.enable && has_gt && m.has_supports) {
                 csv << best_sample.stats.prior_support_count << ","
                     << std::setprecision(4)
-                    << m.support_metrics.precision_05 << ","
-                    << m.support_metrics.precision_1 << ","
-                    << m.support_metrics.precision_2 << ","
-                    << m.support_metrics.mean_abs_error << ","
-                    << m.support_metrics.grid_coverage << ",";
+                    << m.support_metrics.precision_all_05 << ","
+                    << m.support_metrics.precision_all_1 << ","
+                    << m.support_metrics.precision_all_2 << ","
+                    << m.support_metrics.precision_vis_1 << ","
+                    << m.support_metrics.mae_all << ","
+                    << m.support_metrics.mae_visible << ","
+                    << m.support_metrics.grid_recall_1 << ",";
             } else {
-                csv << best_sample.stats.prior_support_count << ",0.0,0.0,0.0,0.0,0.0,";
+                csv << best_sample.stats.prior_support_count << ",0.0,0.0,0.0,0.0,0.0,0.0,0.0,";
             }
 
             csv << std::setprecision(2)

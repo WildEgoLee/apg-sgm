@@ -44,6 +44,7 @@ SupportMetrics evaluate_supports(
 
     std::vector<uint8_t> cell_has_correct_support(n_cells, 0);
     double sum_abs_err = 0.0;
+    double sum_vis_abs_err = 0.0;
 
     for (const auto& s : supports) {
         if (s.x < 0 || s.x >= w || s.y < 0 || s.y >= h) continue;
@@ -58,24 +59,43 @@ SupportMetrics evaluate_supports(
 
         const float err = std::abs(s.disparity - g);
         sum_abs_err += err;
+        if (is_visible) sum_vis_abs_err += err;
 
-        if (err <= 0.5f) sm.correct_05++;
+        if (err <= 0.5f) {
+            sm.correct_05++;
+            if (is_visible) sm.visible_correct_05++;
+        }
         if (err <= 1.0f) {
             sm.correct_1++;
+            if (is_visible) sm.visible_correct_1++;
             const int gx = s.x / cell_size;
             const int gy = s.y / cell_size;
             if (gx < gw && gy < gh) {
                 cell_has_correct_support[gy * gw + gx] = 1;
             }
         }
-        if (err <= 2.0f) sm.correct_2++;
+        if (err <= 2.0f) {
+            sm.correct_2++;
+            if (is_visible) sm.visible_correct_2++;
+        }
     }
 
     if (sm.gt_valid > 0) {
-        sm.precision_05 = static_cast<float>(sm.correct_05) / static_cast<float>(sm.gt_valid);
-        sm.precision_1 = static_cast<float>(sm.correct_1) / static_cast<float>(sm.gt_valid);
-        sm.precision_2 = static_cast<float>(sm.correct_2) / static_cast<float>(sm.gt_valid);
-        sm.mean_abs_error = static_cast<float>(sum_abs_err / sm.gt_valid);
+        sm.precision_all_05 = static_cast<float>(sm.correct_05) / static_cast<float>(sm.gt_valid);
+        sm.precision_all_1  = static_cast<float>(sm.correct_1) / static_cast<float>(sm.gt_valid);
+        sm.precision_all_2  = static_cast<float>(sm.correct_2) / static_cast<float>(sm.gt_valid);
+        sm.precision_05 = sm.precision_all_05;
+        sm.precision_1  = sm.precision_all_1;
+        sm.precision_2  = sm.precision_all_2;
+        sm.mae_all = static_cast<float>(sum_abs_err / sm.gt_valid);
+        sm.mean_abs_error = sm.mae_all;
+    }
+
+    if (sm.visible > 0) {
+        sm.precision_vis_05 = static_cast<float>(sm.visible_correct_05) / static_cast<float>(sm.visible);
+        sm.precision_vis_1  = static_cast<float>(sm.visible_correct_1) / static_cast<float>(sm.visible);
+        sm.precision_vis_2  = static_cast<float>(sm.visible_correct_2) / static_cast<float>(sm.visible);
+        sm.mae_visible = static_cast<float>(sum_vis_abs_err / sm.visible);
     }
 
     int correct_cells = 0;
@@ -85,7 +105,8 @@ SupportMetrics evaluate_supports(
         }
     }
     if (total_vis_cells > 0) {
-        sm.grid_coverage = static_cast<float>(correct_cells) / static_cast<float>(total_vis_cells);
+        sm.grid_recall_1 = static_cast<float>(correct_cells) / static_cast<float>(total_vis_cells);
+        sm.grid_coverage = sm.grid_recall_1;
     }
     return sm;
 }

@@ -12,7 +12,7 @@ for r in rows:
     by_case.setdefault(r['case'], {})[r['ablation_id']] = r
 
 print(f"Total scenes: {len(by_case)}")
-header = f"{'Scene':<14} {'Rec(vis)':<9} {'Rec(mat)':<9} {'P@1.0':<8} {'GridCov':<9} {'SuppMAE':<9} {'PriorRed':<9} {'D Bad2':<8} {'E Bad2':<8} {'dBad2':<8} {'dEPE':<8}"
+header = f"{'Scene':<14} {'Rec(vis)':<9} {'Rec(mat)':<9} {'P@1(vis)':<9} {'P@1(all)':<9} {'GridRec@1':<10} {'MAE(vis)':<9} {'PriorRed':<9} {'D Bad2':<8} {'E Bad2':<8} {'dBad2':<8} {'dEPE':<8}"
 print(header)
 print("-" * len(header))
 
@@ -28,10 +28,12 @@ tot_mat_eval = 0
 tot_mat_in = 0
 
 supp_p05_list = []
-supp_p1_list = []
+supp_p1_all_list = []
+supp_p1_vis_list = []
 supp_p2_list = []
-supp_mae_list = []
-supp_cov_list = []
+supp_mae_all_list = []
+supp_mae_vis_list = []
+supp_grid_rec_list = []
 
 for case, abs_dict in by_case.items():
     d = abs_dict['D']
@@ -65,30 +67,34 @@ for case, abs_dict in by_case.items():
 
     # Support metrics
     p05 = float(e.get('support_p05', 0)) * 100
-    p1 = float(e.get('support_p1', 0)) * 100
+    p1_all = float(e.get('support_p1', 0)) * 100
+    p1_vis = float(e.get('support_p1_vis', p1_all / 100.0)) * 100
     p2 = float(e.get('support_p2', 0)) * 100
-    mae = float(e.get('support_mae', 0))
-    cov = float(e.get('grid_coverage', 0)) * 100
+    mae_all = float(e.get('support_mae', 0))
+    mae_vis = float(e.get('support_mae_vis', mae_all))
+    grid_rec = float(e.get('grid_recall_1', e.get('grid_coverage', 0))) * 100
 
     supp_p05_list.append(p05)
-    supp_p1_list.append(p1)
+    supp_p1_all_list.append(p1_all)
+    supp_p1_vis_list.append(p1_vis)
     supp_p2_list.append(p2)
-    supp_mae_list.append(mae)
-    supp_cov_list.append(cov)
+    supp_mae_all_list.append(mae_all)
+    supp_mae_vis_list.append(mae_vis)
+    supp_grid_rec_list.append(grid_rec)
     
-    print(f"{case:<14} {rec_vis:5.2f}%   {rec_mat:5.2f}%   {p1:5.1f}%   {cov:5.1f}%    {mae:5.2f}px   {p_red:5.1f}%    {d_bad2:5.2f}%   {e_bad2:5.2f}%   {del_bad2:+5.2f}%  {del_epe:+6.3f}")
+    print(f"{case:<14} {rec_vis:5.2f}%   {rec_mat:5.2f}%   {p1_vis:5.1f}%    {p1_all:5.1f}%    {grid_rec:5.1f}%     {mae_vis:5.2f}px   {p_red:5.1f}%    {d_bad2:5.2f}%   {e_bad2:5.2f}%   {del_bad2:+5.2f}%  {del_epe:+6.3f}")
 
 print("-" * len(header))
 micro_vis = (tot_vis_in / tot_vis_eval * 100.0) if tot_vis_eval > 0 else 0.0
 micro_mat = (tot_mat_in / tot_mat_eval * 100.0) if tot_mat_eval > 0 else 0.0
 
-print(f"Macro Visible Recall: {sum(rec_vis_list)/len(rec_vis_list):.2f}%")
-print(f"Micro Visible Recall: {micro_vis:.2f}% (Total: {tot_vis_in}/{tot_vis_eval})")
-print(f"Worst Scene Recall:   {min(rec_vis_list):.2f}%")
-print(f"Macro Matchable Rec:  {sum(rec_mat_list)/len(rec_mat_list):.2f}% (Micro: {micro_mat:.2f}%)")
-print(f"Support Precision@1:  {sum(supp_p1_list)/len(supp_p1_list):.2f}% (P@0.5: {sum(supp_p05_list)/len(supp_p05_list):.2f}%, P@2: {sum(supp_p2_list)/len(supp_p2_list):.2f}%)")
-print(f"Support Mean Abs Err: {sum(supp_mae_list)/len(supp_mae_list):.3f} px")
-print(f"Support Grid Coverage:{sum(supp_cov_list)/len(supp_cov_list):.2f}%")
-print(f"Prior Space Reduction:{sum(prior_red_list)/len(prior_red_list):.2f}%")
-print(f"Delta Bad-2 (D -> E): {sum(delta_bad2_list)/len(delta_bad2_list):+.2f}% (Max increase: {max(delta_bad2_list):+.2f}%)")
-print(f"Delta EPE   (D -> E): {sum(delta_epe_list)/len(delta_epe_list):+.3f} px")
+print(f"Macro Visible Recall:     {sum(rec_vis_list)/len(rec_vis_list):.2f}%")
+print(f"Micro Visible Recall:     {micro_vis:.2f}% (Total: {tot_vis_in}/{tot_vis_eval})")
+print(f"Worst Scene Recall:       {min(rec_vis_list):.2f}%")
+print(f"Macro Matchable Rec:      {sum(rec_mat_list)/len(rec_mat_list):.2f}% (Micro: {micro_mat:.2f}%)")
+print(f"Support Visible P@1:      {sum(supp_p1_vis_list)/len(supp_p1_vis_list):.2f}% (All P@1: {sum(supp_p1_all_list)/len(supp_p1_all_list):.2f}%)")
+print(f"Support Visible MAE:      {sum(supp_mae_vis_list)/len(supp_mae_vis_list):.3f} px (All MAE: {sum(supp_mae_all_list)/len(supp_mae_all_list):.3f} px)")
+print(f"Support Grid Recall@1:    {sum(supp_grid_rec_list)/len(supp_grid_rec_list):.2f}%")
+print(f"Prior Space Reduction:    {sum(prior_red_list)/len(prior_red_list):.2f}%")
+print(f"Delta Bad-2 (D -> E):     {sum(delta_bad2_list)/len(delta_bad2_list):+.2f}% (Max increase: {max(delta_bad2_list):+.2f}%)")
+print(f"Delta EPE   (D -> E):     {sum(delta_epe_list)/len(delta_epe_list):+.3f} px")

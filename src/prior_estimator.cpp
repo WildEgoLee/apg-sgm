@@ -93,29 +93,54 @@ std::vector<SupportMatch> PriorEstimator::extract_supports(const PipelineConfig&
     // Stratified budget allocation:
     // 1) Spatially uniform distribution across all cells (no top/bottom starvation)
     // 2) out.size() <= hard_max (strictly honoring max_supports)
-    std::vector<SupportMatch> out;
-    out.reserve(std::min(static_cast<size_t>(hard_max), static_cast<size_t>(n_cells * 4)));
-    std::vector<int> taken(n_cells, 0);
-
-    // Pass 1: Base quota for each cell
-    const int base_quota = std::max(1, hard_max / std::max(1, n_cells));
-    for (int i = 0; i < n_cells && static_cast<int>(out.size()) < hard_max; ++i) {
-        const int take = std::min(base_quota, static_cast<int>(cell_candidates[i].size()));
-        for (int k = 0; k < take && static_cast<int>(out.size()) < hard_max; ++k) {
-            out.push_back(cell_candidates[i][k]);
-            taken[i]++;
+    std::vector<int> nonempty_cells;
+    nonempty_cells.reserve(n_cells);
+    for (int i = 0; i < n_cells; ++i) {
+        if (!cell_candidates[i].empty()) {
+            nonempty_cells.push_back(i);
         }
     }
 
-    // Pass 2: Redistribution of remaining budget in round-robin fashion across cells that have remaining candidates
-    bool added = true;
-    while (added && static_cast<int>(out.size()) < hard_max) {
-        added = false;
-        for (int i = 0; i < n_cells && static_cast<int>(out.size()) < hard_max; ++i) {
-            if (taken[i] < static_cast<int>(cell_candidates[i].size())) {
-                out.push_back(cell_candidates[i][taken[i]]);
-                taken[i]++;
-                added = true;
+    std::vector<SupportMatch> out;
+    out.reserve(std::min(static_cast<size_t>(hard_max), static_cast<size_t>(n_cells * 4)));
+
+    if (static_cast<int>(nonempty_cells.size()) <= hard_max) {
+        // Case A: Budget is sufficient to cover all nonempty cells.
+        // Each nonempty cell gets at least base_quota supports, remainder is distributed round-robin.
+        std::vector<int> taken(n_cells, 0);
+
+        // Pass 1: Base quota for each nonempty cell
+        const int base_quota = std::max(1, hard_max / std::max(1, static_cast<int>(nonempty_cells.size())));
+        for (int ci : nonempty_cells) {
+            const int take = std::min(base_quota, static_cast<int>(cell_candidates[ci].size()));
+            for (int k = 0; k < take && static_cast<int>(out.size()) < hard_max; ++k) {
+                out.push_back(cell_candidates[ci][k]);
+                taken[ci]++;
+            }
+        }
+
+        // Pass 2: Redistribution of remaining budget in round-robin fashion across cells that have remaining candidates
+        bool added = true;
+        while (added && static_cast<int>(out.size()) < hard_max) {
+            added = false;
+            for (int ci : nonempty_cells) {
+                if (static_cast<int>(out.size()) >= hard_max) break;
+                if (taken[ci] < static_cast<int>(cell_candidates[ci].size())) {
+                    out.push_back(cell_candidates[ci][taken[ci]]);
+                    taken[ci]++;
+                    added = true;
+                }
+            }
+        }
+    } else {
+        // Case B: High-resolution / large grid where nonempty_cells > hard_max.
+        // Deterministic uniform spatial subsampling across the entire image extent.
+        const size_t num_nonempty = nonempty_cells.size();
+        for (int k = 0; k < hard_max; ++k) {
+            const size_t sample_idx = (static_cast<uint64_t>(k) * num_nonempty) / hard_max;
+            const int ci = nonempty_cells[sample_idx];
+            if (!cell_candidates[ci].empty()) {
+                out.push_back(cell_candidates[ci].front());
             }
         }
     }

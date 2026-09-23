@@ -15,13 +15,28 @@ struct SupportMetrics {
     int correct_05 = 0;
     int correct_1 = 0;
     int correct_2 = 0;
+    int visible_correct_05 = 0;
+    int visible_correct_1 = 0;
+    int visible_correct_2 = 0;
 
-    float precision_05 = 0.0f;
-    float precision_1 = 0.0f;
-    float precision_2 = 0.0f;
+    float precision_05 = 0.0f; // alias for precision_all_05
+    float precision_1 = 0.0f;  // alias for precision_all_1
+    float precision_2 = 0.0f;  // alias for precision_all_2
 
-    float mean_abs_error = 0.0f;
-    float grid_coverage = 0.0f;
+    float precision_all_05 = 0.0f;
+    float precision_all_1 = 0.0f;
+    float precision_all_2 = 0.0f;
+
+    float precision_vis_05 = 0.0f;
+    float precision_vis_1 = 0.0f;
+    float precision_vis_2 = 0.0f;
+
+    float mean_abs_error = 0.0f; // alias for mae_all
+    float mae_all = 0.0f;
+    float mae_visible = 0.0f;
+
+    float grid_recall_1 = 0.0f; // fraction of visible GT cells with >=1 correct (<=1.0px) support
+    float grid_coverage = 0.0f; // alias for grid_recall_1
 };
 
 struct StereoMetrics {
