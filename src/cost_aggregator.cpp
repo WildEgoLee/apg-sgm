@@ -336,13 +336,17 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
                 const int block_end =
                     std::min(h, block_start + batch_rows);
 
-                // Horizontal production for a whole row block.  Static
-                // collapsed scheduling removes the per-row dynamic work queue.
-#pragma omp for collapse(2) schedule(static)
-                for (int y = block_start; y < block_end; ++y) {
-                    for (int x = 0; x < w; ++x) {
-                        horizontal_pixel(x, y);
-                    }
+                // Horizontal production for a whole row block.  Flatten
+                // (y,x) explicitly so MSVC /openmp, GCC and Clang all use
+                // the same OpenMP 2.0-compatible pixel-space schedule.
+                const int horiz_rows = block_end - block_start;
+                const int horiz_work = horiz_rows * w;
+#pragma omp for schedule(static)
+                for (int q = 0; q < horiz_work; ++q) {
+                    const int ry = q / w;
+                    const int x = q - ry * w;
+                    const int y = block_start + ry;
+                    horizontal_pixel(x, y);
                 }
 
                 // Rows whose complete vertical dependency window is now
@@ -351,22 +355,28 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
                     std::max(0, block_start - max_down);
                 const int vert_end =
                     std::max(0, std::min(h, block_end - max_down));
+                const int vert_rows = vert_end - vert_begin;
+                const int vert_work = vert_rows * w;
 
-#pragma omp for collapse(2) schedule(static)
-                for (int y = vert_begin; y < vert_end; ++y) {
-                    for (int x = 0; x < w; ++x) {
-                        vertical_pixel(x, y);
-                    }
+#pragma omp for schedule(static)
+                for (int q = 0; q < vert_work; ++q) {
+                    const int ry = q / w;
+                    const int x = q - ry * w;
+                    const int y = vert_begin + ry;
+                    vertical_pixel(x, y);
                 }
             }
 
             // Flush the final max_down rows after all horizontal rows exist.
             const int tail_begin = std::max(0, h - max_down);
-#pragma omp for collapse(2) schedule(static)
-            for (int y = tail_begin; y < h; ++y) {
-                for (int x = 0; x < w; ++x) {
-                    vertical_pixel(x, y);
-                }
+            const int tail_rows = h - tail_begin;
+            const int tail_work = tail_rows * w;
+#pragma omp for schedule(static)
+            for (int q = 0; q < tail_work; ++q) {
+                const int ry = q / w;
+                const int x = q - ry * w;
+                const int y = tail_begin + ry;
+                vertical_pixel(x, y);
             }
         }
 #else
