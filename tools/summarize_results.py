@@ -114,10 +114,10 @@ if len(sys.argv) >= 3:
     for r in p_rows:
         by_case_p.setdefault(r['case'], {})[r['ablation_id']] = r
 
-    print("\n" + "=" * 115)
+    print("\n" + "=" * 120)
     print("DENSE vs PACKED BACKEND COMPARISON (Mode E: Prior + 4SGM)")
-    print("=" * 115)
-    cmp_hdr = f"{'Scene':<14} {'Dense Peak':<12} {'Packed Peak':<12} {'Peak Red%':<10} {'Dense SGM':<11} {'Pack SGM':<10} {'SGM Speed':<10} {'Dense Total':<12} {'Pack Total':<12} {'Pipe Speed':<10}"
+    print("=" * 120)
+    cmp_hdr = f"{'Scene':<14} {'Dense CV Peak':<14} {'Packed CV Peak':<15} {'Peak Red%':<10} {'Dense SGM':<11} {'Pack SGM':<10} {'SGM Speed':<10} {'Dense Total':<12} {'Pack Total':<12} {'Pipe Speed':<10}"
     print(cmp_hdr)
     print("-" * len(cmp_hdr))
 
@@ -131,11 +131,18 @@ if len(sys.argv) >= 3:
         p_e = by_case_p[case].get('E')
         if not d_e or not p_e: continue
 
-        for key in ['w', 'h', 'dmax', 'cost', 'cross', 'p2', 'prior', 'refine', 'paths']:
+        if d_e.get('backend') and d_e['backend'] != 'dense':
+            raise ValueError(f"Expected dense backend in reference file, got '{d_e.get('backend')}'")
+        if p_e.get('backend') and p_e['backend'] != 'packed':
+            raise ValueError(f"Expected packed backend in target file, got '{p_e.get('backend')}'")
+
+        must_equal = [
+            'threads', 'effective_threads', 'warmup', 'repeat', 'build_type',
+            'w', 'h', 'dmax', 'cost', 'cross', 'p2', 'prior', 'refine', 'paths'
+        ]
+        for key in must_equal:
             if key in d_e and key in p_e and d_e[key] != p_e[key]:
-                raise ValueError(f"Incompatible configuration for {case} Mode E: {key} ({d_e[key]} vs {p_e[key]})")
-        if 'threads' in d_e and 'threads' in p_e and d_e['threads'] != p_e['threads']:
-            print(f"Warning: thread count differs for {case}: Dense={d_e['threads']} vs Packed={p_e['threads']}")
+                raise ValueError(f"Incompatible benchmark parameter for {case} Mode E: {key} (Dense={d_e[key]} vs Packed={p_e[key]})")
 
         d_peak = float(d_e['peak_bytes']) / (1024 * 1024)
         p_peak = float(p_e['peak_bytes']) / (1024 * 1024)
@@ -153,11 +160,11 @@ if len(sys.argv) >= 3:
         sgm_spd_list.append(sgm_spd)
         tot_spd_list.append(tot_spd)
 
-        print(f"{case:<14} {d_peak:8.2f} MB   {p_peak:8.2f} MB   {peak_red:6.2f}%    {d_sgm:7.2f} ms  {p_sgm:6.2f} ms  {sgm_spd:5.2f}x      {d_tot:8.2f} ms  {p_tot:8.2f} ms  {tot_spd:5.2f}x")
+        print(f"{case:<14} {d_peak:10.2f} MB   {p_peak:11.2f} MB   {peak_red:6.2f}%    {d_sgm:7.2f} ms  {p_sgm:6.2f} ms  {sgm_spd:5.2f}x      {d_tot:8.2f} ms  {p_tot:8.2f} ms  {tot_spd:5.2f}x")
 
     print("-" * len(cmp_hdr))
     if peak_red_list:
-        print(f"Mean Peak Memory Reduction: {sum(peak_red_list)/len(peak_red_list):.2f}% (min: {min(peak_red_list):.2f}%, max: {max(peak_red_list):.2f}%)")
-        print(f"Mean SGM Speedup:           {sum(sgm_spd_list)/len(sgm_spd_list):.2f}x (min: {min(sgm_spd_list):.2f}x, max: {max(sgm_spd_list):.2f}x)")
-        print(f"Mean Pipeline Speedup:      {sum(tot_spd_list)/len(tot_spd_list):.2f}x (min: {min(tot_spd_list):.2f}x, max: {max(tot_spd_list):.2f}x)")
+        print(f"Mean Peak Cost-Volume Reduction: {sum(peak_red_list)/len(peak_red_list):.2f}% (min: {min(peak_red_list):.2f}%, max: {max(peak_red_list):.2f}%)")
+        print(f"Mean SGM Speedup:               {sum(sgm_spd_list)/len(sgm_spd_list):.2f}x (min: {min(sgm_spd_list):.2f}x, max: {max(sgm_spd_list):.2f}x)")
+        print(f"Mean Pipeline Speedup:          {sum(tot_spd_list)/len(tot_spd_list):.2f}x (min: {min(tot_spd_list):.2f}x, max: {max(tot_spd_list):.2f}x)")
 

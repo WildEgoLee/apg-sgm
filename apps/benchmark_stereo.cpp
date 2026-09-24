@@ -6,13 +6,20 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <vector>
+
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -43,7 +50,11 @@ static bool compare_images(const std::string& buffer_name, const ImgT& img1, con
             bool diff = false;
             using ValT = decltype(v1);
             if constexpr (std::is_floating_point_v<ValT>) {
-                diff = (v1 != v2 && !(std::isnan(v1) && std::isnan(v2)));
+                uint32_t b1 = 0, b2 = 0;
+                static_assert(sizeof(b1) == sizeof(v1));
+                std::memcpy(&b1, &v1, sizeof(b1));
+                std::memcpy(&b2, &v2, sizeof(b2));
+                diff = (b1 != b2);
             } else {
                 diff = (v1 != v2);
             }
@@ -233,8 +244,16 @@ int main(int argc, char** argv) {
                 apg::PipelineBuffers bufs_dense;
                 apg::PipelineBuffers bufs_packed;
 
-                matcher_dense.compute(left_img, right_img, bufs_dense, nullptr);
-                matcher_packed.compute(left_img, right_img, bufs_packed, nullptr);
+                if (!matcher_dense.compute(left_img, right_img, bufs_dense, nullptr)) {
+                    std::cerr << "Dense failed on case " << c.name << ": "
+                              << matcher_dense.last_error() << "\n";
+                    return 1;
+                }
+                if (!matcher_packed.compute(left_img, right_img, bufs_packed, nullptr)) {
+                    std::cerr << "Packed failed on case " << c.name << ": "
+                              << matcher_packed.last_error() << "\n";
+                    return 1;
+                }
 
                 bool pass = true;
                 pass &= compare_images("disparity", bufs_dense.disparity, bufs_packed.disparity);
@@ -286,7 +305,12 @@ int main(int argc, char** argv) {
 #endif
     const std::string backend_str = use_packed ? "packed" : "dense";
 
-    csv << "backend,threads,warmup,repeat,build_type,"
+    int effective_threads = 1;
+#if defined(_OPENMP)
+    effective_threads = (num_threads > 0) ? num_threads : omp_get_max_threads();
+#endif
+
+    csv << "backend,threads,effective_threads,warmup,repeat,build_type,"
         << "case,ablation_id,ablation_name,cost,cross,p2,prior,refine,paths,w,h,dmax,"
         << "epe,bad_0_5,bad_1_0,bad_2_0,bad_3_0,kitti_d1_all,kitti_d1_noc,valid_ratio,lr_fail_ratio,edge_epe,nonedge_epe,"
         << "recall_all,recall_matchable,recall_visible,range_vis_eval_px,range_vis_in_px,range_mat_eval_px,range_mat_in_px,"
@@ -299,7 +323,7 @@ int main(int argc, char** argv) {
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
-              << "backend=" << backend_str << ", threads=" << num_threads << ", "
+              << "backend=" << backend_str << ", threads=" << num_threads << " (effective=" << effective_threads << "), "
               << "warmup=" << warmup_runs << ", repeat=" << repeat_runs << "\n"
               << "Output CSV: " << output_path << "\n"
               << "------------------------------------------------------------\n";
@@ -344,7 +368,10 @@ int main(int argc, char** argv) {
 
             // Warmup runs
             for (int r = 0; r < warmup_runs; ++r) {
-                matcher.compute(left_img, right_img, bufs, nullptr);
+                if (!matcher.compute(left_img, right_img, bufs, nullptr)) {
+                    std::cerr << "StereoMatcher::compute failed during warmup: " << matcher.last_error() << "\n";
+                    return 1;
+                }
             }
 
             // Timed runs
@@ -356,7 +383,10 @@ int main(int argc, char** argv) {
 
             for (int r = 0; r < repeat_runs; ++r) {
                 auto t0 = std::chrono::high_resolution_clock::now();
-                matcher.compute(left_img, right_img, bufs, &samples[r].stats);
+                if (!matcher.compute(left_img, right_img, bufs, &samples[r].stats)) {
+                    std::cerr << "StereoMatcher::compute failed during benchmark: " << matcher.last_error() << "\n";
+                    return 1;
+                }
                 auto t1 = std::chrono::high_resolution_clock::now();
                 samples[r].total_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
             }
@@ -409,6 +439,7 @@ int main(int argc, char** argv) {
             // Output to CSV
             csv << backend_str << ","
                 << num_threads << ","
+                << effective_threads << ","
                 << warmup_runs << ","
                 << repeat_runs << ","
                 << build_type << ","
