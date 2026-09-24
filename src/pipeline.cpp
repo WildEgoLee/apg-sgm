@@ -205,8 +205,6 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         agg.aggregate_packed(cfg_, out.left_gray, out.packed_cost);
         const auto t5 = time_now();
 
-        out.packed_cost32.allocate(layout, 0);
-
         sgm.optimize_packed(cfg_, out.left_gray, out.packed_cost, out.packed_cost32);
         const auto t6 = time_now();
 

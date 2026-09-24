@@ -286,42 +286,62 @@ void SgmOptimizer::aggregate_path_packed(const PipelineConfig& cfg, const Image8
 
     if (dx == 1 && dy == 0) {
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel
 #endif
-        for (int y = 0; y < h; ++y) {
+        {
             PathState prev, cur;
-            for (int x = 0; x < w; ++x) {
-                process_pixel_packed(x, y, x > 0, x - 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
+#if defined(_OPENMP)
+#pragma omp for schedule(dynamic, 4)
+#endif
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    process_pixel_packed(x, y, x > 0, x - 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
+                }
             }
         }
     } else if (dx == -1 && dy == 0) {
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel
 #endif
-        for (int y = 0; y < h; ++y) {
+        {
             PathState prev, cur;
-            for (int x = w - 1; x >= 0; --x) {
-                process_pixel_packed(x, y, x + 1 < w, x + 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
+#if defined(_OPENMP)
+#pragma omp for schedule(dynamic, 4)
+#endif
+            for (int y = 0; y < h; ++y) {
+                for (int x = w - 1; x >= 0; --x) {
+                    process_pixel_packed(x, y, x + 1 < w, x + 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
+                }
             }
         }
     } else if (dx == 0 && dy == 1) {
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel
 #endif
-        for (int x = 0; x < w; ++x) {
+        {
             PathState prev, cur;
-            for (int y = 0; y < h; ++y) {
-                process_pixel_packed(x, y, y > 0, x, y - 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+#if defined(_OPENMP)
+#pragma omp for schedule(dynamic, 4)
+#endif
+            for (int x = 0; x < w; ++x) {
+                for (int y = 0; y < h; ++y) {
+                    process_pixel_packed(x, y, y > 0, x, y - 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+                }
             }
         }
     } else if (dx == 0 && dy == -1) {
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel
 #endif
-        for (int x = 0; x < w; ++x) {
+        {
             PathState prev, cur;
-            for (int y = h - 1; y >= 0; --y) {
-                process_pixel_packed(x, y, y + 1 < h, x, y + 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+#if defined(_OPENMP)
+#pragma omp for schedule(dynamic, 4)
+#endif
+            for (int x = 0; x < w; ++x) {
+                for (int y = h - 1; y >= 0; --y) {
+                    process_pixel_packed(x, y, y + 1 < h, x, y + 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+                }
             }
         }
     } else {
