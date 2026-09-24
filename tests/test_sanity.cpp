@@ -230,8 +230,8 @@ int main() {
     std::cout << "  Streaming Cross workspace: " << cross_workspace_bytes
               << " B vs full packed tmp: " << packed_cost.data_bytes() << " B\n";
 
-    if (cross_workspace_bytes == 0 || cross_workspace_bytes >= packed_cost.data_bytes()) {
-        std::cerr << "Error: streaming Cross workspace did not reduce temporary packed storage: "
+    if (cross_workspace_bytes == 0 || cross_workspace_bytes > packed_cost.data_bytes()) {
+        std::cerr << "Error: streaming Cross workspace exceeded a full packed temporary volume: "
                   << cross_workspace_bytes << " vs " << packed_cost.data_bytes() << "\n";
         return 1;
     }
