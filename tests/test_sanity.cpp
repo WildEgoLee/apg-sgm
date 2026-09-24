@@ -196,8 +196,9 @@ int main() {
     // Dense aggregation
     ca.aggregate(cfg_hq, buf_packed);
 
-    // Packed aggregation
-    ca.aggregate_packed(cfg_hq, buf_packed.left_gray, packed_cost);
+    // Packed aggregation (streaming horizontal workspace)
+    const size_t cross_workspace_bytes =
+        ca.aggregate_packed(cfg_hq, buf_packed.left_gray, packed_cost);
 
     size_t cross_evaluated = 0;
     for (int y = 0; y < h; ++y) {
@@ -226,6 +227,14 @@ int main() {
         }
     }
     std::cout << "  Evaluated " << cross_evaluated << " packed cross-aggregated states (100% bit-exact match!)\n";
+    std::cout << "  Streaming Cross workspace: " << cross_workspace_bytes
+              << " B vs full packed tmp: " << packed_cost.data_bytes() << " B\n";
+
+    if (cross_workspace_bytes == 0 || cross_workspace_bytes >= packed_cost.data_bytes()) {
+        std::cerr << "Error: streaming Cross workspace did not reduce temporary packed storage: "
+                  << cross_workspace_bytes << " vs " << packed_cost.data_bytes() << "\n";
+        return 1;
+    }
 
     if (cross_evaluated != evaluated_disparities) {
         std::cerr << "Error: cross evaluated count mismatch: " << cross_evaluated << " vs " << evaluated_disparities << "\n";

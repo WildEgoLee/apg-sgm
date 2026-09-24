@@ -23,6 +23,7 @@ struct PipelineStats {
 
     size_t cost_bytes = 0;
     size_t aggregated_cost_bytes = 0;
+    size_t cross_workspace_bytes = 0;
     size_t estimated_peak_bytes = 0;
 
     size_t prior_support_count = 0;

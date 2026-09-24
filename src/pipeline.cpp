@@ -187,6 +187,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
     double t_cross_ms = 0.0;
     double t_sgm_ms = 0.0;
     double t_wta_ms = 0.0;
+    size_t cross_workspace_bytes = 0;
 
     const bool use_packed = cfg_.resolves_to_packed();
 
@@ -202,7 +203,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         wta_right_from_packed_volume(cfg_, out.packed_cost, out.disparity_right);
         const auto t4 = time_now();
 
-        agg.aggregate_packed(cfg_, out.left_gray, out.packed_cost);
+        cross_workspace_bytes = agg.aggregate_packed(cfg_, out.left_gray, out.packed_cost);
         const auto t5 = time_now();
 
         out.packed_cost32.allocate(layout, 0);
@@ -229,6 +230,9 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         const auto t4 = time_now();
 
         agg.aggregate(cfg_, out);
+        if (cfg_.aggregation.enable) {
+            cross_workspace_bytes = out.cost.bytes();
+        }
         const auto t5 = time_now();
 
         // Optimize left volume with SGM streaming into out.cost32
@@ -276,16 +280,18 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
             const size_t c16 = out.packed_cost.data_bytes();
             const size_t c32 = out.packed_cost32.data_bytes();
             const size_t lay = out.packed_cost.layout_bytes();
-            const size_t cross_tmp = cfg_.aggregation.enable ? c16 : 0;
+            const size_t cross_tmp = cross_workspace_bytes;
             stats->cost_bytes = c16 + lay;
             stats->aggregated_cost_bytes = c32;
+            stats->cross_workspace_bytes = cross_tmp;
             stats->estimated_peak_bytes = std::max(c16 + cross_tmp, c16 + c32) + lay;
         } else {
             const size_t c16 = out.cost.bytes();
             const size_t c32 = out.cost32.bytes();
-            const size_t cross_tmp = cfg_.aggregation.enable ? c16 : 0;
+            const size_t cross_tmp = cross_workspace_bytes;
             stats->cost_bytes = c16;
             stats->aggregated_cost_bytes = c32;
+            stats->cross_workspace_bytes = cross_tmp;
             stats->estimated_peak_bytes = std::max(c16 + cross_tmp, c16 + c32);
         }
 

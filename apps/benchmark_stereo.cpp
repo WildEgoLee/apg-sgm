@@ -336,7 +336,7 @@ int main(int argc, char** argv) {
         << "support_visible_gt_cells,support_correct_visible_cells,"
         << "support_mae,support_mae_vis,grid_recall_1,"
         << "mean_search_width,mean_geom_width,geom_reduction_ratio,prior_incremental_reduction,total_reduction_ratio,"
-        << "cost_bytes,cost32_bytes,peak_bytes,"
+        << "cost_bytes,cost32_bytes,cross_workspace_bytes,peak_bytes,"
         << "reliable_ratio,unreliable_ratio,refine_changed_ratio,refine_epe_delta,post_epe_delta,total_epe_delta,"
         << "time_total_ms,time_cost_ms,time_right_wta_ms,time_cross_ms,time_sgm_ms,time_prior_ms,time_refine_ms,time_post_ms\n";
 
@@ -543,6 +543,7 @@ int main(int argc, char** argv) {
                 << best_sample.stats.search_reduction_ratio << ","
                 << best_sample.stats.cost_bytes << ","
                 << best_sample.stats.aggregated_cost_bytes << ","
+                << best_sample.stats.cross_workspace_bytes << ","
                 << best_sample.stats.estimated_peak_bytes << ","
                 << best_sample.stats.reliable_ratio << ","
                 << best_sample.stats.unreliable_ratio << ","

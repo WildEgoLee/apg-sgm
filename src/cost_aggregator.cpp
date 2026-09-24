@@ -1,5 +1,9 @@
 #include "apg_sgm/cost_aggregator.hpp"
 
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #if defined(_OPENMP)
@@ -142,12 +146,33 @@ void CostAggregator::aggregate(const PipelineConfig& cfg, PipelineBuffers& buf) 
     }
 }
 
-void CostAggregator::aggregate_hv_packed(PackedCostVolume16& packed_cost,
-                                         PackedCostVolume16& tmp,
-                                         const std::vector<int16_t>& Larm, const std::vector<int16_t>& Rarm,
-                                         const std::vector<int16_t>& Uarm, const std::vector<int16_t>& Darm) const {
+std::size_t CostAggregator::aggregate_hv_packed_streaming(
+    PackedCostVolume16& packed_cost,
+    const std::vector<int16_t>& Larm, const std::vector<int16_t>& Rarm,
+    const std::vector<int16_t>& Uarm, const std::vector<int16_t>& Darm,
+    int iterations) const {
     const int w = packed_cost.width();
     const int h = packed_cost.height();
+    if (w <= 0 || h <= 0 || packed_cost.empty()) return 0;
+
+    const auto layout = packed_cost.layout();
+    if (!layout) return 0;
+
+    int max_up = 0;
+    int max_down = 0;
+    for (int16_t v : Uarm) max_up = std::max(max_up, static_cast<int>(v));
+    for (int16_t v : Darm) max_down = std::max(max_down, static_cast<int>(v));
+
+    // A target row y is emitted only after horizontal row y + max_down exists.
+    // At that point the oldest horizontal row still needed is y - max_up, so
+    // max_up + max_down + 1 ring rows are sufficient for exact vertical reuse.
+    const int ring_rows = std::max(1, std::min(h, max_up + max_down + 1));
+
+    struct HorizontalRow {
+        int y = -1;
+        uint32_t base_offset = 0;
+        std::vector<uint16_t> data;
+    };
 
     struct NeighborInfo {
         const uint16_t* slice;
@@ -155,123 +180,199 @@ void CostAggregator::aggregate_hv_packed(PackedCostVolume16& packed_cost,
         int dmax;
     };
 
-    // Horizontal pass: packed_cost -> tmp
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
+    std::vector<HorizontalRow> ring(static_cast<std::size_t>(ring_rows));
+    std::vector<std::size_t> slot_capacity(static_cast<std::size_t>(ring_rows), 0);
+
+    auto row_begin = [&](int y) -> uint32_t {
+        return layout->offsets[static_cast<std::size_t>(y) * w];
+    };
+    auto row_end = [&](int y) -> uint32_t {
+        return layout->offsets[static_cast<std::size_t>(y + 1) * w];
+    };
+
+    // Pre-reserve the maximum state count ever mapped to each ring slot.
+    // This keeps allocation out of the streaming loop and makes workspace
+    // memory deterministic across iterations.
     for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            const int lo = packed_cost.dmin(x, y);
-            const int hi = packed_cost.dmax(x, y);
-            const int D_p = hi - lo;
-            if (D_p <= 0) continue;
-
-            const int i = y * w + x;
-            const int x0 = x - Larm[i];
-            const int x1 = x + Rarm[i];
-            const int arm_span = x1 - x0 + 1;
-
-            std::vector<NeighborInfo> heap_neighbors;
-            NeighborInfo stack_neighbors[64];
-            NeighborInfo* neighbors = stack_neighbors;
-            if (arm_span > 64) {
-                heap_neighbors.resize(arm_span);
-                neighbors = heap_neighbors.data();
-            }
-
-            int num_neighbors = 0;
-            for (int xx = x0; xx <= x1; ++xx) {
-                const int n_dmin = packed_cost.dmin(xx, y);
-                const int n_dmax = packed_cost.dmax(xx, y);
-                if (n_dmax > n_dmin) {
-                    neighbors[num_neighbors++] = { packed_cost.slice(xx, y), n_dmin, n_dmax };
-                }
-            }
-
-            uint16_t* dst = tmp.slice(x, y);
-            for (int di = 0; di < D_p; ++di) {
-                const int d = lo + di;
-                int acc = 0;
-                int count = 0;
-                for (int k = 0; k < num_neighbors; ++k) {
-                    if (d >= neighbors[k].dmin && d < neighbors[k].dmax) {
-                        const uint16_t c = neighbors[k].slice[d - neighbors[k].dmin];
-                        if (c != kInvalidCost) {
-                            acc += c;
-                            ++count;
-                        }
-                    }
-                }
-                dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
-            }
-        }
+        const std::size_t states = static_cast<std::size_t>(row_end(y) - row_begin(y));
+        const std::size_t slot = static_cast<std::size_t>(y % ring_rows);
+        slot_capacity[slot] = std::max(slot_capacity[slot], states);
     }
 
-    // Vertical pass: tmp -> packed_cost
-#if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
-#endif
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            const int lo = packed_cost.dmin(x, y);
-            const int hi = packed_cost.dmax(x, y);
-            const int D_p = hi - lo;
-            if (D_p <= 0) continue;
+    std::size_t workspace_bytes = 0;
+    for (int s = 0; s < ring_rows; ++s) {
+        auto& row = ring[static_cast<std::size_t>(s)];
+        row.data.reserve(slot_capacity[static_cast<std::size_t>(s)]);
+        workspace_bytes += row.data.capacity() * sizeof(uint16_t);
+    }
 
-            const int i = y * w + x;
-            const int y0 = y - Uarm[i];
-            const int y1 = y + Darm[i];
-            const int arm_span = y1 - y0 + 1;
+    auto prepare_row = [&](int y) {
+        auto& row = ring[static_cast<std::size_t>(y % ring_rows)];
+        row.y = y;
+        row.base_offset = row_begin(y);
+        row.data.resize(static_cast<std::size_t>(row_end(y) - row.base_offset));
+    };
 
-            std::vector<NeighborInfo> heap_neighbors;
-            NeighborInfo stack_neighbors[64];
-            NeighborInfo* neighbors = stack_neighbors;
-            if (arm_span > 64) {
-                heap_neighbors.resize(arm_span);
-                neighbors = heap_neighbors.data();
-            }
+    auto horizontal_pixel = [&](int x, int y) {
+        auto& row = ring[static_cast<std::size_t>(y % ring_rows)];
+        assert(row.y == y);
 
-            int num_neighbors = 0;
-            for (int yy = y0; yy <= y1; ++yy) {
-                const int n_dmin = tmp.dmin(x, yy);
-                const int n_dmax = tmp.dmax(x, yy);
-                if (n_dmax > n_dmin) {
-                    neighbors[num_neighbors++] = { tmp.slice(x, yy), n_dmin, n_dmax };
-                }
-            }
+        const int lo = packed_cost.dmin(x, y);
+        const int hi = packed_cost.dmax(x, y);
+        const int D_p = hi - lo;
+        if (D_p <= 0) return;
 
-            uint16_t* dst = packed_cost.slice(x, y);
-            for (int di = 0; di < D_p; ++di) {
-                const int d = lo + di;
-                int acc = 0;
-                int count = 0;
-                for (int k = 0; k < num_neighbors; ++k) {
-                    if (d >= neighbors[k].dmin && d < neighbors[k].dmax) {
-                        const uint16_t c = neighbors[k].slice[d - neighbors[k].dmin];
-                        if (c != kInvalidCost) {
-                            acc += c;
-                            ++count;
-                        }
-                    }
-                }
-                dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
+        const int i = y * w + x;
+        const int x0 = x - Larm[i];
+        const int x1 = x + Rarm[i];
+        const int arm_span = x1 - x0 + 1;
+
+        std::vector<NeighborInfo> heap_neighbors;
+        NeighborInfo stack_neighbors[64];
+        NeighborInfo* neighbors = stack_neighbors;
+        if (arm_span > 64) {
+            heap_neighbors.resize(static_cast<std::size_t>(arm_span));
+            neighbors = heap_neighbors.data();
+        }
+
+        int num_neighbors = 0;
+        for (int xx = x0; xx <= x1; ++xx) {
+            const int n_dmin = packed_cost.dmin(xx, y);
+            const int n_dmax = packed_cost.dmax(xx, y);
+            if (n_dmax > n_dmin) {
+                neighbors[num_neighbors++] = { packed_cost.slice(xx, y), n_dmin, n_dmax };
             }
         }
+
+        const uint32_t pixel_offset = packed_cost.offset(x, y);
+        uint16_t* dst = row.data.data() + static_cast<std::size_t>(pixel_offset - row.base_offset);
+        for (int di = 0; di < D_p; ++di) {
+            const int d = lo + di;
+            int acc = 0;
+            int count = 0;
+            for (int k = 0; k < num_neighbors; ++k) {
+                if (d >= neighbors[k].dmin && d < neighbors[k].dmax) {
+                    const uint16_t c = neighbors[k].slice[d - neighbors[k].dmin];
+                    if (c != kInvalidCost) {
+                        acc += c;
+                        ++count;
+                    }
+                }
+            }
+            dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
+        }
+    };
+
+    auto vertical_pixel = [&](int x, int y) {
+        const int lo = packed_cost.dmin(x, y);
+        const int hi = packed_cost.dmax(x, y);
+        const int D_p = hi - lo;
+        if (D_p <= 0) return;
+
+        const int i = y * w + x;
+        const int y0 = y - Uarm[i];
+        const int y1 = y + Darm[i];
+        const int arm_span = y1 - y0 + 1;
+
+        std::vector<NeighborInfo> heap_neighbors;
+        NeighborInfo stack_neighbors[64];
+        NeighborInfo* neighbors = stack_neighbors;
+        if (arm_span > 64) {
+            heap_neighbors.resize(static_cast<std::size_t>(arm_span));
+            neighbors = heap_neighbors.data();
+        }
+
+        int num_neighbors = 0;
+        for (int yy = y0; yy <= y1; ++yy) {
+            const auto& row = ring[static_cast<std::size_t>(yy % ring_rows)];
+            assert(row.y == yy);
+
+            const int n_dmin = packed_cost.dmin(x, yy);
+            const int n_dmax = packed_cost.dmax(x, yy);
+            if (n_dmax > n_dmin) {
+                const uint32_t pixel_offset = packed_cost.offset(x, yy);
+                const uint16_t* slice =
+                    row.data.data() + static_cast<std::size_t>(pixel_offset - row.base_offset);
+                neighbors[num_neighbors++] = { slice, n_dmin, n_dmax };
+            }
+        }
+
+        uint16_t* dst = packed_cost.slice(x, y);
+        for (int di = 0; di < D_p; ++di) {
+            const int d = lo + di;
+            int acc = 0;
+            int count = 0;
+            for (int k = 0; k < num_neighbors; ++k) {
+                if (d >= neighbors[k].dmin && d < neighbors[k].dmax) {
+                    const uint16_t c = neighbors[k].slice[d - neighbors[k].dmin];
+                    if (c != kInvalidCost) {
+                        acc += c;
+                        ++count;
+                    }
+                }
+            }
+            dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
+        }
+    };
+
+    const int passes = std::max(1, iterations);
+    for (int pass = 0; pass < passes; ++pass) {
+#if defined(_OPENMP)
+#pragma omp parallel
+        {
+            for (int r = 0; r < h + max_down; ++r) {
+                if (r < h) {
+#pragma omp single
+                    {
+                        prepare_row(r);
+                    }
+
+#pragma omp for schedule(dynamic, 4)
+                    for (int x = 0; x < w; ++x) {
+                        horizontal_pixel(x, r);
+                    }
+                }
+
+                const int y = r - max_down;
+                if (y >= 0 && y < h) {
+#pragma omp for schedule(dynamic, 4)
+                    for (int x = 0; x < w; ++x) {
+                        vertical_pixel(x, y);
+                    }
+                }
+            }
+        }
+#else
+        for (int r = 0; r < h + max_down; ++r) {
+            if (r < h) {
+                prepare_row(r);
+                for (int x = 0; x < w; ++x) {
+                    horizontal_pixel(x, r);
+                }
+            }
+
+            const int y = r - max_down;
+            if (y >= 0 && y < h) {
+                for (int x = 0; x < w; ++x) {
+                    vertical_pixel(x, y);
+                }
+            }
+        }
+#endif
     }
+
+    return workspace_bytes;
 }
 
-void CostAggregator::aggregate_packed(const PipelineConfig& cfg,
-                                      const Image8& left_gray,
-                                      PackedCostVolume16& packed_cost) const {
-    if (!cfg.aggregation.enable || packed_cost.empty()) return;
+std::size_t CostAggregator::aggregate_packed(const PipelineConfig& cfg,
+                                             const Image8& left_gray,
+                                             PackedCostVolume16& packed_cost) const {
+    if (!cfg.aggregation.enable || packed_cost.empty()) return 0;
+
     std::vector<int16_t> L, R, U, D;
     build_cross_arms(left_gray, cfg.aggregation, L, R, U, D);
-    const int iters = std::max(1, cfg.aggregation.iterations);
-
-    PackedCostVolume16 tmp(packed_cost.layout(), kInvalidCost);
-    for (int i = 0; i < iters; ++i) {
-        aggregate_hv_packed(packed_cost, tmp, L, R, U, D);
-    }
+    return aggregate_hv_packed_streaming(
+        packed_cost, L, R, U, D, std::max(1, cfg.aggregation.iterations));
 }
 
 } // namespace apg
