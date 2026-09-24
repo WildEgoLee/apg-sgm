@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
     int warmup_runs = 2;
     int repeat_runs = 5;
     int num_threads = 0;
-    bool use_packed = false;
+    std::string backend_arg = "auto";
     bool verify_backends = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -148,8 +148,10 @@ int main(int argc, char** argv) {
             repeat_runs = std::max(1, std::stoi(argv[++i]));
         } else if (arg == "--threads" && i + 1 < argc) {
             num_threads = std::max(0, std::stoi(argv[++i]));
+        } else if (arg == "--backend" && i + 1 < argc) {
+            backend_arg = argv[++i];
         } else if (arg == "--packed") {
-            use_packed = true;
+            backend_arg = "packed";
         } else if (arg == "--verify-backends") {
             verify_backends = true;
         } else if (arg == "--help" || arg == "-h") {
@@ -163,7 +165,9 @@ int main(int argc, char** argv) {
                       << "  --warmup <N>          Warmup runs before timing (default: 2)\n"
                       << "  --repeat <N>          Timed runs per test case (default: 5, reports median)\n"
                       << "  --threads <N>         Number of OpenMP threads (default: 0 = auto)\n"
-                      << "  --packed              Use packed cost volume backend (Sigma_p D(p))\n"
+                      << "  --backend <auto|dense|packed>\n"
+                      << "                        Volume backend policy (default: auto -> packed for Prior/HQ, dense otherwise)\n"
+                      << "  --packed              Alias for --backend packed\n"
                       << "  --verify-backends     Verify 100% bit-exact parity between dense and packed backends\n"
                       << "  --help, -h            Show this help message\n";
             return 0;
@@ -171,6 +175,18 @@ int main(int argc, char** argv) {
             std::cerr << "Error: unknown or incomplete argument '" << arg << "'. Use --help for usage.\n";
             return 1;
         }
+    }
+
+    apg::VolumeBackend volume_backend = apg::VolumeBackend::Auto;
+    if (backend_arg == "packed" || backend_arg == "PACKED") {
+        volume_backend = apg::VolumeBackend::Packed;
+    } else if (backend_arg == "dense" || backend_arg == "DENSE") {
+        volume_backend = apg::VolumeBackend::Dense;
+    } else if (backend_arg == "auto" || backend_arg == "AUTO") {
+        volume_backend = apg::VolumeBackend::Auto;
+    } else {
+        std::cerr << "Error: unrecognized --backend '" << backend_arg << "'. Options: auto, dense, packed.\n";
+        return 1;
     }
 
     if (manifest_path.empty()) {
@@ -232,11 +248,11 @@ int main(int argc, char** argv) {
                 apg::PipelineConfig cfg_dense = apg::make_ablation_config(aid, c.dmax);
                 cfg_dense.min_disparity = c.dmin;
                 cfg_dense.max_disparity = c.dmax;
-                cfg_dense.use_packed_volume = false;
+                cfg_dense.volume_backend = apg::VolumeBackend::Dense;
                 if (num_threads > 0) cfg_dense.num_threads = num_threads;
 
                 apg::PipelineConfig cfg_packed = cfg_dense;
-                cfg_packed.use_packed_volume = true;
+                cfg_packed.volume_backend = apg::VolumeBackend::Packed;
 
                 apg::StereoMatcher matcher_dense(cfg_dense);
                 apg::StereoMatcher matcher_packed(cfg_packed);
@@ -303,7 +319,6 @@ int main(int argc, char** argv) {
 #else
     const std::string build_type = "Debug";
 #endif
-    const std::string backend_str = use_packed ? "packed" : "dense";
 
     int effective_threads = 1;
 #if defined(_OPENMP)
@@ -323,7 +338,7 @@ int main(int argc, char** argv) {
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
-              << "backend=" << backend_str << ", threads=" << num_threads << " (effective=" << effective_threads << "), "
+              << "backend_policy=" << backend_arg << ", threads=" << num_threads << " (effective=" << effective_threads << "), "
               << "warmup=" << warmup_runs << ", repeat=" << repeat_runs << "\n"
               << "Output CSV: " << output_path << "\n"
               << "------------------------------------------------------------\n";
@@ -356,10 +371,13 @@ int main(int argc, char** argv) {
             apg::PipelineConfig cfg = apg::make_ablation_config(aid, c.dmax);
             cfg.min_disparity = c.dmin;
             cfg.max_disparity = c.dmax;
-            cfg.use_packed_volume = use_packed;
+            cfg.volume_backend = volume_backend;
             if (num_threads > 0) {
                 cfg.num_threads = num_threads;
             }
+
+            const bool use_packed = cfg.resolves_to_packed();
+            const std::string backend_str = use_packed ? "packed" : "dense";
 
             apg::StereoMatcher matcher(cfg);
 

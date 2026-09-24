@@ -188,7 +188,9 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
     double t_sgm_ms = 0.0;
     double t_wta_ms = 0.0;
 
-    if (cfg_.use_packed_volume) {
+    const bool use_packed = cfg_.resolves_to_packed();
+
+    if (use_packed) {
         out.packed_cost32.release();
 
         auto layout = PackedVolumeLayout::from_range(out.range);
@@ -270,7 +272,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         stats->timing.post_ms = elapsed_ms(t9, t10);
         stats->timing.total_ms = elapsed_ms(t_total_start, t10);
 
-        if (cfg_.use_packed_volume) {
+        if (use_packed) {
             const size_t c16 = out.packed_cost.data_bytes();
             const size_t c32 = out.packed_cost32.data_bytes();
             const size_t lay = out.packed_cost.layout_bytes();

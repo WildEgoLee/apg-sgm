@@ -67,10 +67,17 @@ struct PostParams {
 
 struct PipelineConfig {
     QualityMode mode = QualityMode::Balanced;
+    VolumeBackend volume_backend = VolumeBackend::Auto;
     int min_disparity = 0;
     int max_disparity = 128;
     int num_threads = 0;
     bool use_packed_volume = false;
+
+    bool resolves_to_packed() const {
+        if (volume_backend == VolumeBackend::Packed) return true;
+        if (volume_backend == VolumeBackend::Dense) return false;
+        return prior.enable || use_packed_volume;
+    }
 
     CostParams cost;
     AggregationParams aggregation;

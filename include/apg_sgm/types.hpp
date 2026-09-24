@@ -14,6 +14,12 @@ enum class QualityMode {
     HighQuality
 };
 
+enum class VolumeBackend {
+    Auto,
+    Dense,
+    Packed
+};
+
 enum class CensusType {
     Census9x7,
     SymmetricCensus9x7

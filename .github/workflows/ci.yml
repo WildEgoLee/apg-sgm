@@ -48,3 +48,5 @@ jobs:
         run: |
           python3 tools/prepare_dataset.py --synthetic
           ./build/apg-benchmark --manifest benchmarks/manifests/synthetic.txt --output results/test_ci.csv --warmup 0 --repeat 1
+          ./build/apg-benchmark --manifest benchmarks/manifests/synthetic.txt --backend packed --output results/test_packed_ci.csv --warmup 0 --repeat 1
+          ./build/apg-benchmark --manifest benchmarks/manifests/synthetic.txt --modes E --verify-backends
