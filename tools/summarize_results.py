@@ -27,6 +27,17 @@ tot_vis_in = 0
 tot_mat_eval = 0
 tot_mat_in = 0
 
+tot_supp_gt_valid = 0
+tot_supp_vis = 0
+tot_supp_corr_05 = 0
+tot_supp_corr_1 = 0
+tot_supp_corr_2 = 0
+tot_supp_vis_corr_05 = 0
+tot_supp_vis_corr_1 = 0
+tot_supp_vis_corr_2 = 0
+tot_vis_gt_cells = 0
+tot_corr_vis_cells = 0
+
 supp_p05_list = []
 supp_p1_all_list = []
 supp_p1_vis_list = []
@@ -68,11 +79,23 @@ for case, abs_dict in by_case.items():
     tot_mat_eval += mat_eval
     tot_mat_in += mat_in
 
+    # Support raw counts
+    tot_supp_gt_valid += int(e.get('support_gt_valid', 0))
+    tot_supp_vis += int(e.get('support_visible', 0))
+    tot_supp_corr_05 += int(e.get('support_correct_05', 0))
+    tot_supp_corr_1 += int(e.get('support_correct_1', 0))
+    tot_supp_corr_2 += int(e.get('support_correct_2', 0))
+    tot_supp_vis_corr_05 += int(e.get('support_visible_correct_05', 0))
+    tot_supp_vis_corr_1 += int(e.get('support_visible_correct_1', 0))
+    tot_supp_vis_corr_2 += int(e.get('support_visible_correct_2', 0))
+    tot_vis_gt_cells += int(e.get('support_visible_gt_cells', 0))
+    tot_corr_vis_cells += int(e.get('support_correct_visible_cells', 0))
+
     # Support metrics
-    p05 = float(e.get('support_p05', 0)) * 100
+    p05 = float(e.get('support_pvis_05', e.get('support_p05', 0))) * 100
     p1_all = float(e.get('support_p1', 0)) * 100
-    p1_vis = float(e.get('support_p1_vis', p1_all / 100.0)) * 100
-    p2 = float(e.get('support_p2', 0)) * 100
+    p1_vis = float(e.get('support_pvis_1', e.get('support_p1_vis', p1_all / 100.0))) * 100
+    p2 = float(e.get('support_pvis_2', e.get('support_p2', 0))) * 100
     mae_all = float(e.get('support_mae', 0))
     mae_vis = float(e.get('support_mae_vis', mae_all))
     grid_rec = float(e.get('grid_recall_1', e.get('grid_coverage', 0))) * 100
@@ -94,13 +117,24 @@ print("-" * len(header))
 micro_vis = (tot_vis_in / tot_vis_eval * 100.0) if tot_vis_eval > 0 else 0.0
 micro_mat = (tot_mat_in / tot_mat_eval * 100.0) if tot_mat_eval > 0 else 0.0
 
+micro_supp_p05_vis = (tot_supp_vis_corr_05 / tot_supp_vis * 100.0) if tot_supp_vis > 0 else 0.0
+micro_supp_p1_vis = (tot_supp_vis_corr_1 / tot_supp_vis * 100.0) if tot_supp_vis > 0 else 0.0
+micro_supp_p2_vis = (tot_supp_vis_corr_2 / tot_supp_vis * 100.0) if tot_supp_vis > 0 else 0.0
+micro_supp_grid_rec = (tot_corr_vis_cells / tot_vis_gt_cells * 100.0) if tot_vis_gt_cells > 0 else 0.0
+
 print(f"Macro Visible Recall:     {sum(rec_vis_list)/len(rec_vis_list):.2f}%")
 print(f"Micro Visible Recall:     {micro_vis:.2f}% (Total: {tot_vis_in}/{tot_vis_eval})")
 print(f"Worst Scene Recall:       {min(rec_vis_list):.2f}%")
 print(f"Macro Matchable Rec:      {sum(rec_mat_list)/len(rec_mat_list):.2f}% (Micro: {micro_mat:.2f}%)")
-print(f"Support Visible P@1:      {sum(supp_p1_vis_list)/len(supp_p1_vis_list):.2f}% (All P@1: {sum(supp_p1_all_list)/len(supp_p1_all_list):.2f}%)")
+if tot_supp_vis > 0:
+    print(f"Support Visible P@0.5:    Macro {sum(supp_p05_list)/len(supp_p05_list):.2f}% | Micro {micro_supp_p05_vis:.2f}% ({tot_supp_vis_corr_05}/{tot_supp_vis})")
+    print(f"Support Visible P@1:      Macro {sum(supp_p1_vis_list)/len(supp_p1_vis_list):.2f}% | Micro {micro_supp_p1_vis:.2f}% ({tot_supp_vis_corr_1}/{tot_supp_vis})")
+    print(f"Support Visible P@2:      Macro {sum(supp_p2_list)/len(supp_p2_list):.2f}% | Micro {micro_supp_p2_vis:.2f}% ({tot_supp_vis_corr_2}/{tot_supp_vis})")
+    print(f"Support Grid Recall@1:    Macro {sum(supp_grid_rec_list)/len(supp_grid_rec_list):.2f}% | Micro {micro_supp_grid_rec:.2f}% ({tot_corr_vis_cells}/{tot_vis_gt_cells})")
+else:
+    print(f"Support Visible P@1:      {sum(supp_p1_vis_list)/len(supp_p1_vis_list):.2f}% (All P@1: {sum(supp_p1_all_list)/len(supp_p1_all_list):.2f}%)")
+    print(f"Support Grid Recall@1:    {sum(supp_grid_rec_list)/len(supp_grid_rec_list):.2f}%")
 print(f"Support Visible MAE:      {sum(supp_mae_vis_list)/len(supp_mae_vis_list):.3f} px (All MAE: {sum(supp_mae_all_list)/len(supp_mae_all_list):.3f} px)")
-print(f"Support Grid Recall@1:    {sum(supp_grid_rec_list)/len(supp_grid_rec_list):.2f}%")
 print(f"Prior Space Reduction:    {sum(prior_red_list)/len(prior_red_list):.2f}%")
 if delta_bad2_list:
     print(f"Delta Bad-2 (D -> E):     {sum(delta_bad2_list)/len(delta_bad2_list):+.2f}% (Max increase: {max(delta_bad2_list):+.2f}%)")

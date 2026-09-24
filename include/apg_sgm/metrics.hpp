@@ -18,6 +18,8 @@ struct SupportMetrics {
     int visible_correct_05 = 0;
     int visible_correct_1 = 0;
     int visible_correct_2 = 0;
+    int visible_gt_cells = 0;
+    int correct_visible_cells = 0;
 
     float precision_05 = 0.0f; // alias for precision_all_05
     float precision_1 = 0.0f;  // alias for precision_all_1

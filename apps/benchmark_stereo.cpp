@@ -330,7 +330,11 @@ int main(int argc, char** argv) {
         << "epe,bad_0_5,bad_1_0,bad_2_0,bad_3_0,kitti_d1_all,kitti_d1_noc,valid_ratio,lr_fail_ratio,edge_epe,nonedge_epe,"
         << "recall_all,recall_matchable,recall_visible,range_vis_eval_px,range_vis_in_px,range_mat_eval_px,range_mat_in_px,"
         << "prior_miss_vis_count,prior_miss_edge_pct,prior_miss_nonedge_pct,"
-        << "prior_supports,support_p05,support_p1,support_p2,support_p1_vis,support_mae,support_mae_vis,grid_recall_1,"
+        << "prior_supports,support_p05,support_p1,support_p2,support_p1_vis,support_pvis_05,support_pvis_1,support_pvis_2,"
+        << "support_gt_valid,support_visible,support_correct_05,support_correct_1,support_correct_2,"
+        << "support_visible_correct_05,support_visible_correct_1,support_visible_correct_2,"
+        << "support_visible_gt_cells,support_correct_visible_cells,"
+        << "support_mae,support_mae_vis,grid_recall_1,"
         << "mean_search_width,mean_geom_width,geom_reduction_ratio,prior_incremental_reduction,total_reduction_ratio,"
         << "cost_bytes,cost32_bytes,peak_bytes,"
         << "reliable_ratio,unreliable_ratio,refine_changed_ratio,refine_epe_delta,post_epe_delta,total_epe_delta,"
@@ -423,7 +427,7 @@ int main(int argc, char** argv) {
                 const apg::Image32f* after_refine_ptr = cfg.refine.enable ? &bufs.d_after_refine : nullptr;
                 const apg::Image8* vis_ptr = has_vis ? &vis_mask : nullptr;
                 const std::vector<apg::SupportMatch>* supp_ptr = cfg.prior.enable ? &bufs.supports : nullptr;
-                m = apg::evaluate_stereo(bufs.disparity, gt_disp, range_ptr, before_refine_ptr, after_refine_ptr, vis_ptr, static_cast<float>(c.dmax), supp_ptr);
+                m = apg::evaluate_stereo(bufs.disparity, gt_disp, range_ptr, before_refine_ptr, after_refine_ptr, vis_ptr, 1e5f, supp_ptr);
             }
 
             std::string id_str = apg::ablation_id_to_string(aid);
@@ -510,11 +514,24 @@ int main(int argc, char** argv) {
                     << m.support_metrics.precision_all_1 << ","
                     << m.support_metrics.precision_all_2 << ","
                     << m.support_metrics.precision_vis_1 << ","
+                    << m.support_metrics.precision_vis_05 << ","
+                    << m.support_metrics.precision_vis_1 << ","
+                    << m.support_metrics.precision_vis_2 << ","
+                    << m.support_metrics.gt_valid << ","
+                    << m.support_metrics.visible << ","
+                    << m.support_metrics.correct_05 << ","
+                    << m.support_metrics.correct_1 << ","
+                    << m.support_metrics.correct_2 << ","
+                    << m.support_metrics.visible_correct_05 << ","
+                    << m.support_metrics.visible_correct_1 << ","
+                    << m.support_metrics.visible_correct_2 << ","
+                    << m.support_metrics.visible_gt_cells << ","
+                    << m.support_metrics.correct_visible_cells << ","
                     << m.support_metrics.mae_all << ","
                     << m.support_metrics.mae_visible << ","
                     << m.support_metrics.grid_recall_1 << ",";
             } else {
-                csv << best_sample.stats.prior_support_count << ",0.0,0.0,0.0,0.0,0.0,0.0,0.0,";
+                csv << best_sample.stats.prior_support_count << ",0.0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0,0,0,0,0,0,0,0.0,0.0,0.0,";
             }
 
             csv << std::setprecision(2)

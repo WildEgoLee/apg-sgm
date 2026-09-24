@@ -106,6 +106,8 @@ SupportMetrics evaluate_supports(
             correct_cells++;
         }
     }
+    sm.visible_gt_cells = total_vis_cells;
+    sm.correct_visible_cells = correct_cells;
     if (total_vis_cells > 0) {
         sm.grid_recall_1 = static_cast<float>(correct_cells) / static_cast<float>(total_vis_cells);
         sm.grid_coverage = sm.grid_recall_1;

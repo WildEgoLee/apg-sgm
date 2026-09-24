@@ -42,8 +42,8 @@ def main():
     parser.add_argument("--in_dir", type=str, required=True, help="Directory of KITTI 2015 training set (containing image_2, image_3, disp_occ_0, disp_noc_0)")
     parser.add_argument("--out_dir", type=str, default="benchmarks/data/kitti2015", help="Output directory")
     parser.add_argument("--manifest", type=str, default="benchmarks/manifests/kitti2015.txt", help="Manifest output path")
-    parser.add_argument("--max_pairs", type=int, default=20, help="Maximum number of pairs to process (default 20)")
-    parser.add_argument("--dmax", type=int, default=192, help="Max disparity search range for KITTI (default 192)")
+    parser.add_argument("--max_pairs", type=int, default=0, help="Maximum number of pairs to process (0 = all pairs, default: 0)")
+    parser.add_argument("--dmax", type=int, default=192, help="Minimum max disparity search range for KITTI (default 192)")
     args = parser.parse_args()
 
     in_dir = Path(args.in_dir)
@@ -57,13 +57,22 @@ def main():
     disp_occ_dir = in_dir / "disp_occ_0"
     disp_noc_dir = in_dir / "disp_noc_0"
 
-    if not img2_dir.exists() or not img3_dir.exists():
-        print(f"Error: {img2_dir} or {img3_dir} does not exist.")
-        return
+    # Fail-fast validation checks: require all four essential directories
+    if not img2_dir.exists():
+        raise FileNotFoundError(f"Missing required KITTI left image directory: {img2_dir}")
+    if not img3_dir.exists():
+        raise FileNotFoundError(f"Missing required KITTI right image directory: {img3_dir}")
+    if not disp_occ_dir.exists():
+        raise FileNotFoundError(f"Missing required KITTI ground truth disparity directory: {disp_occ_dir}")
+    if not disp_noc_dir.exists():
+        raise FileNotFoundError(f"Missing required KITTI non-occluded disparity directory: {disp_noc_dir}")
 
     left_files = sorted(list(img2_dir.glob("*_10.png")))
     if not left_files:
         left_files = sorted(list(img2_dir.glob("*.png")))
+
+    if not left_files:
+        raise FileNotFoundError(f"No PNG image files found in {img2_dir}")
 
     selected_files = left_files[: args.max_pairs] if args.max_pairs > 0 else left_files
 
@@ -78,7 +87,15 @@ def main():
         case_name = f"kitti15_{pair_id}"
         rf = img3_dir / lf.name
         if not rf.exists():
-            continue
+            raise FileNotFoundError(f"Missing corresponding right image for {lf.name}: {rf}")
+
+        gt_path = disp_occ_dir / lf.name
+        if not gt_path.exists():
+            raise FileNotFoundError(f"Missing required GT file (disp_occ_0) for {lf.name}: {gt_path}")
+
+        noc_path = disp_noc_dir / lf.name
+        if not noc_path.exists():
+            raise FileNotFoundError(f"Missing required non-occluded GT file (disp_noc_0) for {lf.name}: {noc_path}")
 
         print(f"Processing KITTI pair: {case_name}...")
         im_l = Image.open(lf).convert("L")
@@ -91,33 +108,31 @@ def main():
         write_pgm(rp_out, np.array(im_r, dtype=np.uint8))
 
         # Disparity GT conversion (KITTI stores 16-bit uint PNG, disp = val / 256.0, 0 = invalid)
-        gt_path = disp_occ_dir / lf.name
         gp_out = out_dir / f"{case_name}_gt.pfm"
-        has_gt = gt_path.exists()
-        if has_gt:
-            disp_png = np.array(Image.open(gt_path), dtype=np.float32)
-            disp_gt = np.where(disp_png > 0, disp_png / 256.0, -1.0)
-            write_pfm(gp_out, disp_gt)
+        disp_png = np.array(Image.open(gt_path), dtype=np.float32)
+        disp_gt = np.where(disp_png > 0, disp_png / 256.0, -1.0)
+        write_pfm(gp_out, disp_gt)
+
+        # Calculate max valid GT disparity to prevent censoring
+        valid_disp = disp_gt[disp_gt > 0]
+        if len(valid_disp) == 0:
+            raise RuntimeError(f"No valid ground truth pixels found in {gt_path}")
+        max_gt_d = float(np.max(valid_disp))
+        # Compute safe dmax aligned to multiple of 16, bounded below by args.dmax
+        scene_dmax = max(args.dmax, int(np.ceil((max_gt_d + 1.0) / 16.0)) * 16)
 
         # Visibility mask (non-occluded ground truth)
-        noc_path = disp_noc_dir / lf.name
         vp_out = out_dir / f"{case_name}_vis.pgm"
-        has_vis = noc_path.exists()
-        if has_vis:
-            noc_png = np.array(Image.open(noc_path), dtype=np.uint16)
-            vis_arr = np.where(noc_png > 0, 255, 0).astype(np.uint8)
-            write_pgm(vp_out, vis_arr)
-        elif has_gt:
-            vis_arr = np.where(disp_gt >= 0, 255, 0).astype(np.uint8)
-            write_pgm(vp_out, vis_arr)
-            has_vis = True
+        noc_png = np.array(Image.open(noc_path), dtype=np.uint16)
+        vis_arr = np.where(noc_png > 0, 255, 0).astype(np.uint8)
+        write_pgm(vp_out, vis_arr)
 
         rel_lp = os.path.relpath(lp_out, manifest_path.parent).replace("\\", "/")
         rel_rp = os.path.relpath(rp_out, manifest_path.parent).replace("\\", "/")
-        rel_gp = os.path.relpath(gp_out, manifest_path.parent).replace("\\", "/") if has_gt else ""
-        rel_vp = os.path.relpath(vp_out, manifest_path.parent).replace("\\", "/") if has_vis else ""
+        rel_gp = os.path.relpath(gp_out, manifest_path.parent).replace("\\", "/")
+        rel_vp = os.path.relpath(vp_out, manifest_path.parent).replace("\\", "/")
 
-        manifest_lines.append(f"{case_name} {rel_lp} {rel_rp} {rel_gp} {args.dmax} 0 {rel_vp}")
+        manifest_lines.append(f"{case_name} {rel_lp} {rel_rp} {rel_gp} {scene_dmax} 0 {rel_vp}")
 
     with open(manifest_path, "w", encoding="utf-8") as f:
         f.write("\n".join(manifest_lines) + "\n")
