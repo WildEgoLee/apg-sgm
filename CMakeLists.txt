@@ -55,3 +55,7 @@ add_test(NAME synthetic COMMAND test_synthetic)
 add_executable(test_ablation tests/test_ablation.cpp)
 target_link_libraries(test_ablation PRIVATE apg_sgm)
 add_test(NAME ablation COMMAND test_ablation)
+
+add_executable(test_headers tests/test_headers.cpp)
+target_link_libraries(test_headers PRIVATE apg_sgm)
+add_test(NAME headers COMMAND test_headers)

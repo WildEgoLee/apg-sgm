@@ -1,40 +1,14 @@
 #pragma once
 
 #include "apg_sgm/image.hpp"
+#include "apg_sgm/packed_volume.hpp"
+#include "apg_sgm/search_range.hpp"
 #include "apg_sgm/types.hpp"
 
 #include <algorithm>
 #include <vector>
 
 namespace apg {
-
-struct SearchRange {
-    Image16s dmin;
-    Image16s dmax;
-    int global_min = 0;
-    int global_max = 0;
-
-    int D() const { return global_max - global_min; }
-
-    void allocate(int w, int h, int gmin, int gmax) {
-        global_min = gmin;
-        global_max = gmax;
-        dmin = Image16s(w, h, static_cast<int16_t>(gmin));
-        dmax = Image16s(w, h, static_cast<int16_t>(gmax));
-    }
-
-    bool valid(int x, int y) const {
-        return dmax.at(x, y) > dmin.at(x, y);
-    }
-
-    void set_pixel(int x, int y, int lo, int hi) {
-        lo = std::max(lo, global_min);
-        hi = std::min(hi, global_max);
-        if (hi < lo) hi = lo;
-        dmin.at(x, y) = static_cast<int16_t>(lo);
-        dmax.at(x, y) = static_cast<int16_t>(hi);
-    }
-};
 
 template <typename T>
 class CostVolumeT {
@@ -48,6 +22,15 @@ public:
         d0_ = d0;
         D_ = d1 - d0;
         data_.assign(static_cast<size_t>(w) * h * D_, fill);
+    }
+
+    void release() {
+        data_.clear();
+        data_.shrink_to_fit();
+        w_ = 0;
+        h_ = 0;
+        d0_ = 0;
+        D_ = 0;
     }
 
     int width() const { return w_; }
@@ -80,12 +63,6 @@ private:
 
 using CostVolume = CostVolumeT<uint16_t>;
 using CostVolume32 = CostVolumeT<uint32_t>;
-
-} // namespace apg
-
-#include "apg_sgm/packed_volume.hpp"
-
-namespace apg {
 
 struct PipelineBuffers {
     Image8 left;

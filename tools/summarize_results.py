@@ -36,23 +36,26 @@ supp_mae_vis_list = []
 supp_grid_rec_list = []
 
 for case, abs_dict in by_case.items():
-    d = abs_dict['D']
-    e = abs_dict['E']
+    d = abs_dict.get('D')
+    e = abs_dict.get('E')
+    if not e:
+        continue
     rec_vis = float(e['recall_visible']) * 100
     rec_mat = float(e['recall_matchable']) * 100
     p_red = float(e['prior_incremental_reduction']) * 100
-    d_bad2 = float(d['bad_2_0'])
+    d_bad2 = float(d['bad_2_0']) if d else 0.0
     e_bad2 = float(e['bad_2_0'])
-    d_epe = float(d['epe'])
+    d_epe = float(d['epe']) if d else 0.0
     e_epe = float(e['epe'])
-    del_bad2 = e_bad2 - d_bad2
-    del_epe = e_epe - d_epe
+    del_bad2 = (e_bad2 - d_bad2) if d else 0.0
+    del_epe = (e_epe - d_epe) if d else 0.0
     
     rec_vis_list.append(rec_vis)
     rec_mat_list.append(rec_mat)
     prior_red_list.append(p_red)
-    delta_bad2_list.append(del_bad2)
-    delta_epe_list.append(del_epe)
+    if d:
+        delta_bad2_list.append(del_bad2)
+        delta_epe_list.append(del_epe)
 
     # Pixel counts for micro recall
     vis_eval = int(e.get('range_vis_eval_px', 0))
@@ -82,7 +85,10 @@ for case, abs_dict in by_case.items():
     supp_mae_vis_list.append(mae_vis)
     supp_grid_rec_list.append(grid_rec)
     
-    print(f"{case:<14} {rec_vis:5.2f}%   {rec_mat:5.2f}%   {p1_vis:5.1f}%    {p1_all:5.1f}%    {grid_rec:5.1f}%     {mae_vis:5.2f}px   {p_red:5.1f}%    {d_bad2:5.2f}%   {e_bad2:5.2f}%   {del_bad2:+5.2f}%  {del_epe:+6.3f}")
+    d_bad2_str = f"{d_bad2:5.2f}%" if d else "  N/A "
+    del_bad2_str = f"{del_bad2:+5.2f}%" if d else "  N/A "
+    del_epe_str = f"{del_epe:+6.3f}" if d else "   N/A"
+    print(f"{case:<14} {rec_vis:5.2f}%   {rec_mat:5.2f}%   {p1_vis:5.1f}%    {p1_all:5.1f}%    {grid_rec:5.1f}%     {mae_vis:5.2f}px   {p_red:5.1f}%    {d_bad2_str}   {e_bad2:5.2f}%   {del_bad2_str}  {del_epe_str}")
 
 print("-" * len(header))
 micro_vis = (tot_vis_in / tot_vis_eval * 100.0) if tot_vis_eval > 0 else 0.0
@@ -96,8 +102,9 @@ print(f"Support Visible P@1:      {sum(supp_p1_vis_list)/len(supp_p1_vis_list):.
 print(f"Support Visible MAE:      {sum(supp_mae_vis_list)/len(supp_mae_vis_list):.3f} px (All MAE: {sum(supp_mae_all_list)/len(supp_mae_all_list):.3f} px)")
 print(f"Support Grid Recall@1:    {sum(supp_grid_rec_list)/len(supp_grid_rec_list):.2f}%")
 print(f"Prior Space Reduction:    {sum(prior_red_list)/len(prior_red_list):.2f}%")
-print(f"Delta Bad-2 (D -> E):     {sum(delta_bad2_list)/len(delta_bad2_list):+.2f}% (Max increase: {max(delta_bad2_list):+.2f}%)")
-print(f"Delta EPE   (D -> E):     {sum(delta_epe_list)/len(delta_epe_list):+.3f} px")
+if delta_bad2_list:
+    print(f"Delta Bad-2 (D -> E):     {sum(delta_bad2_list)/len(delta_bad2_list):+.2f}% (Max increase: {max(delta_bad2_list):+.2f}%)")
+    print(f"Delta EPE   (D -> E):     {sum(delta_epe_list)/len(delta_epe_list):+.3f} px")
 
 if len(sys.argv) >= 3:
     packed_file = sys.argv[2]
@@ -123,6 +130,12 @@ if len(sys.argv) >= 3:
         d_e = by_case[case].get('E')
         p_e = by_case_p[case].get('E')
         if not d_e or not p_e: continue
+
+        for key in ['w', 'h', 'dmax', 'cost', 'cross', 'p2', 'prior', 'refine', 'paths']:
+            if key in d_e and key in p_e and d_e[key] != p_e[key]:
+                raise ValueError(f"Incompatible configuration for {case} Mode E: {key} ({d_e[key]} vs {p_e[key]})")
+        if 'threads' in d_e and 'threads' in p_e and d_e['threads'] != p_e['threads']:
+            print(f"Warning: thread count differs for {case}: Dense={d_e['threads']} vs Packed={p_e['threads']}")
 
         d_peak = float(d_e['peak_bytes']) / (1024 * 1024)
         p_peak = float(p_e['peak_bytes']) / (1024 * 1024)

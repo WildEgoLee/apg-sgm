@@ -26,6 +26,9 @@ void wta_right_from_left_volume(const PipelineConfig& cfg, const CostVolume& vol
     const int d0 = vol.d0();
     const int D = vol.D();
     disp_right = Image32f(w, h, -1.f);
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
     for (int y = 0; y < h; ++y) {
         for (int xr = 0; xr < w; ++xr) {
             int best_d = -1;
@@ -80,6 +83,9 @@ void wta_right_from_packed_volume(const PipelineConfig& cfg, const PackedCostVol
     const int d0 = cfg.min_disparity;
     const int D = cfg.max_disparity - cfg.min_disparity;
     disp_right = Image32f(w, h, -1.f);
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
     for (int y = 0; y < h; ++y) {
         for (int xr = 0; xr < w; ++xr) {
             int best_d = -1;
@@ -183,9 +189,10 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
     double t_wta_ms = 0.0;
 
     if (cfg_.use_packed_volume) {
+        out.packed_cost32.release();
+
         auto layout = PackedVolumeLayout::from_range(out.range);
         out.packed_cost.allocate(layout, kInvalidCost);
-        out.packed_cost32.allocate(layout, 0);
 
         cost.compute_volume_packed(cfg_, out, out.packed_cost);
         const auto t3 = time_now();
@@ -195,6 +202,8 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
 
         agg.aggregate_packed(cfg_, out.left_gray, out.packed_cost);
         const auto t5 = time_now();
+
+        out.packed_cost32.allocate(layout, 0);
 
         sgm.optimize_packed(cfg_, out.left_gray, out.packed_cost, out.packed_cost32);
         const auto t6 = time_now();
@@ -208,6 +217,8 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         t_sgm_ms = elapsed_ms(t5, t6);
         t_wta_ms = elapsed_ms(t6, t7);
     } else {
+        out.cost32.release();
+
         cost.compute_volume(cfg_, out);
         const auto t3 = time_now();
 
@@ -260,13 +271,21 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         stats->timing.total_ms = elapsed_ms(t_total_start, t10);
 
         if (cfg_.use_packed_volume) {
-            stats->cost_bytes = out.packed_cost.bytes();
-            stats->aggregated_cost_bytes = out.packed_cost32.bytes();
+            const size_t c16 = out.packed_cost.data_bytes();
+            const size_t c32 = out.packed_cost32.data_bytes();
+            const size_t lay = out.packed_cost.layout_bytes();
+            const size_t cross_tmp = cfg_.aggregation.enable ? c16 : 0;
+            stats->cost_bytes = c16 + lay;
+            stats->aggregated_cost_bytes = c32;
+            stats->estimated_peak_bytes = std::max(c16 + cross_tmp, c16 + c32) + lay;
         } else {
-            stats->cost_bytes = out.cost.bytes();
-            stats->aggregated_cost_bytes = out.cost32.bytes();
+            const size_t c16 = out.cost.bytes();
+            const size_t c32 = out.cost32.bytes();
+            const size_t cross_tmp = cfg_.aggregation.enable ? c16 : 0;
+            stats->cost_bytes = c16;
+            stats->aggregated_cost_bytes = c32;
+            stats->estimated_peak_bytes = std::max(c16 + cross_tmp, c16 + c32);
         }
-        stats->estimated_peak_bytes = stats->cost_bytes + stats->aggregated_cost_bytes;
 
         const int w = out.disparity.width();
         const int h = out.disparity.height();

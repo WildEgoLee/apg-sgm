@@ -1,6 +1,6 @@
 #pragma once
 
-#include "apg_sgm/buffers.hpp"
+#include "apg_sgm/search_range.hpp"
 #include "apg_sgm/types.hpp"
 
 #include <cstddef>
@@ -90,6 +90,12 @@ public:
 
     void fill(T value) {
         std::fill(data_.begin(), data_.end(), value);
+    }
+
+    void release() {
+        data_.clear();
+        data_.shrink_to_fit();
+        layout_.reset();
     }
 
     std::shared_ptr<const PackedVolumeLayout> layout() const { return layout_; }

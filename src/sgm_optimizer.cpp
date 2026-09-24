@@ -194,33 +194,48 @@ void SgmOptimizer::aggregate_path(const PipelineConfig& cfg, const Image8& gray,
     const int D = base.D();
     const int P1 = cfg.sgm.P1;
 
-    std::vector<int> prev(D), cur(D);
-
     if (dx == 1 && dy == 0) {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
         for (int y = 0; y < h; ++y) {
+            std::vector<int> prev(D), cur(D);
             for (int x = 0; x < w; ++x) {
                 process_pixel(x, y, x > 0, x - 1, y, D, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == -1 && dy == 0) {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
         for (int y = 0; y < h; ++y) {
+            std::vector<int> prev(D), cur(D);
             for (int x = w - 1; x >= 0; --x) {
                 process_pixel(x, y, x + 1 < w, x + 1, y, D, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == 0 && dy == 1) {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
         for (int x = 0; x < w; ++x) {
+            std::vector<int> prev(D), cur(D);
             for (int y = 0; y < h; ++y) {
                 process_pixel(x, y, y > 0, x, y - 1, D, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == 0 && dy == -1) {
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
         for (int x = 0; x < w; ++x) {
+            std::vector<int> prev(D), cur(D);
             for (int y = h - 1; y >= 0; --y) {
                 process_pixel(x, y, y + 1 < h, x, y + 1, D, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else {
+        std::vector<int> prev(D), cur(D);
         std::vector<uint8_t> seen(static_cast<size_t>(w) * h, 0);
         auto inb = [&](int x, int y) { return x >= 0 && x < w && y >= 0 && y < h; };
         for (int y0 = 0; y0 < h; ++y0) {
@@ -368,6 +383,9 @@ void wta_impl(const PipelineConfig& cfg, const CostVolumeT<TCost>& vol,
     if (best_cost) *best_cost = Image32f(w, h, std::numeric_limits<float>::infinity());
     if (second_cost) *second_cost = Image32f(w, h, std::numeric_limits<float>::infinity());
 
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const TCost* s = vol.slice(x, y);
