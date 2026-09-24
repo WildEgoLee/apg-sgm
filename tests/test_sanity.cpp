@@ -310,7 +310,7 @@ int main() {
     cfg_pipeline.post.lr_check = true;
 
     PipelineBuffers buf_pipe_dense;
-    cfg_pipeline.use_packed_volume = false;
+    cfg_pipeline.volume_backend = VolumeBackend::Dense;
     StereoMatcher matcher_dense(cfg_pipeline);
     PipelineStats stats_dense;
     if (!matcher_dense.compute(left, right, buf_pipe_dense, &stats_dense)) {
@@ -319,7 +319,7 @@ int main() {
     }
 
     PipelineBuffers buf_pipe_packed;
-    cfg_pipeline.use_packed_volume = true;
+    cfg_pipeline.volume_backend = VolumeBackend::Packed;
     StereoMatcher matcher_packed(cfg_pipeline);
     PipelineStats stats_packed;
     if (!matcher_packed.compute(left, right, buf_pipe_packed, &stats_packed)) {

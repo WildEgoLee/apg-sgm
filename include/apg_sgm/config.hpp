@@ -71,6 +71,8 @@ struct PipelineConfig {
     int min_disparity = 0;
     int max_disparity = 128;
     int num_threads = 0;
+    // Deprecated compatibility switch. Only honored when volume_backend == Auto.
+    // Prefer volume_backend = VolumeBackend::{Auto, Dense, Packed}.
     bool use_packed_volume = false;
 
     bool resolves_to_packed() const {

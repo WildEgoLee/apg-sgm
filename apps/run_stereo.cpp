@@ -11,6 +11,7 @@ static void usage(const char* argv0) {
     std::cerr
         << "Usage: " << argv0
         << " left.pgm right.pgm out.pgm [--mode fast|balanced|high] [--disp-max N] [--threads N]\n"
+        << "                          [--backend auto|dense|packed] [--packed]\n"
         << "Inputs: binary PGM (P5) or PPM (P6). Images must already be rectified.\n";
 }
 
@@ -32,7 +33,7 @@ int main(int argc, char** argv) {
     QualityMode mode = QualityMode::Balanced;
     int dmax = 128;
     int threads = 0;
-    bool use_packed = false;
+    std::string backend_arg = "auto";
     for (int i = 4; i < argc; ++i) {
         if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             mode = parse_mode(argv[++i]);
@@ -40,12 +41,26 @@ int main(int argc, char** argv) {
             dmax = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             threads = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+            backend_arg = argv[++i];
         } else if (std::strcmp(argv[i], "--packed") == 0) {
-            use_packed = true;
+            backend_arg = "packed";
         } else {
             usage(argv[0]);
             return 1;
         }
+    }
+
+    VolumeBackend volume_backend = VolumeBackend::Auto;
+    if (backend_arg == "packed" || backend_arg == "PACKED") {
+        volume_backend = VolumeBackend::Packed;
+    } else if (backend_arg == "dense" || backend_arg == "DENSE") {
+        volume_backend = VolumeBackend::Dense;
+    } else if (backend_arg == "auto" || backend_arg == "AUTO") {
+        volume_backend = VolumeBackend::Auto;
+    } else {
+        std::cerr << "Error: unrecognized --backend '" << backend_arg << "'. Options: auto, dense, packed.\n";
+        return 1;
     }
 
     Image8 left, right;
@@ -60,7 +75,7 @@ int main(int argc, char** argv) {
 
     PipelineConfig cfg = PipelineConfig::from_mode(mode, dmax);
     cfg.num_threads = threads;
-    cfg.use_packed_volume = use_packed;
+    cfg.volume_backend = volume_backend;
     StereoMatcher matcher(cfg);
     PipelineBuffers buf;
 

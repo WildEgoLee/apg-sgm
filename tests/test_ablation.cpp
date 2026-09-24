@@ -153,10 +153,56 @@ static void test_metrics() {
     std::cout << "[PASS] StereoMetrics evaluation and range recall verified\n";
 }
 
+static void test_volume_backend_policy() {
+    auto cfgA = make_ablation_config(AblationId::A_Census4, 64);
+    auto cfgB = make_ablation_config(AblationId::B_MultiCost4, 64);
+    auto cfgC = make_ablation_config(AblationId::C_Cross4, 64);
+    auto cfgD = make_ablation_config(AblationId::D_Adaptive4, 64);
+    auto cfgE = make_ablation_config(AblationId::E_Prior4, 64);
+    auto cfgF = make_ablation_config(AblationId::F_Refine4, 64);
+    auto cfgG = make_ablation_config(AblationId::G_HQ8, 64);
+
+    // Default under Auto
+    assert(cfgA.volume_backend == VolumeBackend::Auto);
+    assert(!cfgA.resolves_to_packed());
+    assert(!cfgB.resolves_to_packed());
+    assert(!cfgC.resolves_to_packed());
+    assert(!cfgD.resolves_to_packed());
+
+    assert(cfgE.resolves_to_packed());
+    assert(cfgF.resolves_to_packed());
+    assert(cfgG.resolves_to_packed());
+
+    // Explicit Dense override
+    cfgE.volume_backend = VolumeBackend::Dense;
+    assert(!cfgE.resolves_to_packed());
+    cfgG.volume_backend = VolumeBackend::Dense;
+    assert(!cfgG.resolves_to_packed());
+
+    // Explicit Packed override
+    cfgA.volume_backend = VolumeBackend::Packed;
+    assert(cfgA.resolves_to_packed());
+    cfgD.volume_backend = VolumeBackend::Packed;
+    assert(cfgD.resolves_to_packed());
+
+    // Legacy use_packed_volume compatibility fallback (only when Auto)
+    auto cfg_legacy = make_ablation_config(AblationId::A_Census4, 64);
+    assert(cfg_legacy.volume_backend == VolumeBackend::Auto);
+    cfg_legacy.use_packed_volume = true;
+    assert(cfg_legacy.resolves_to_packed());
+
+    // Explicit Dense override must take precedence over legacy use_packed_volume
+    cfg_legacy.volume_backend = VolumeBackend::Dense;
+    assert(!cfg_legacy.resolves_to_packed());
+
+    std::cout << "[PASS] VolumeBackend policy and resolves_to_packed verified\n";
+}
+
 int main() {
     test_single_variable_ablation();
     test_pfm_io();
     test_metrics();
+    test_volume_backend_policy();
     std::cout << "All ablation/metrics tests passed!\n";
     return 0;
 }
