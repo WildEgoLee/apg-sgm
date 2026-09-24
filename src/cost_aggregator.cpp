@@ -163,14 +163,16 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
     for (int16_t v : Uarm) max_up = std::max(max_up, static_cast<int>(v));
     for (int16_t v : Darm) max_down = std::max(max_down, static_cast<int>(v));
 
-    // A target row y is emitted only after horizontal row y + max_down exists.
-    // At that point the oldest horizontal row still needed is y - max_up, so
-    // max_up + max_down + 1 ring rows are sufficient for exact vertical reuse.
-    const int ring_rows = std::max(1, std::min(h, max_up + max_down + 1));
+    // Process horizontal rows in blocks to amortize OpenMP barriers.  Batching
+    // needs B-1 extra ring slots versus the one-row pipeline: before vertical
+    // rows from the current block are emitted, every horizontal row in that
+    // block must coexist with the oldest still-needed row.
+    constexpr int kBatchRows = 16;
+    const int batch_rows = std::min(h, kBatchRows);
+    const int ring_rows = std::max(
+        1, std::min(h, max_up + max_down + batch_rows));
 
     struct HorizontalRow {
-        int y = -1;
-        uint32_t base_offset = 0;
         std::vector<uint16_t> data;
     };
 
@@ -190,11 +192,12 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
         return layout->offsets[static_cast<std::size_t>(y + 1) * w];
     };
 
-    // Pre-reserve the maximum state count ever mapped to each ring slot.
-    // This keeps allocation out of the streaming loop and makes workspace
-    // memory deterministic across iterations.
+    // Pre-size every ring slot to the largest packed row that can map to it.
+    // The slot then needs no allocation, resize or metadata update while the
+    // OpenMP workers stream blocks through it.
     for (int y = 0; y < h; ++y) {
-        const std::size_t states = static_cast<std::size_t>(row_end(y) - row_begin(y));
+        const std::size_t states =
+            static_cast<std::size_t>(row_end(y) - row_begin(y));
         const std::size_t slot = static_cast<std::size_t>(y % ring_rows);
         slot_capacity[slot] = std::max(slot_capacity[slot], states);
     }
@@ -202,20 +205,12 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
     std::size_t workspace_bytes = 0;
     for (int s = 0; s < ring_rows; ++s) {
         auto& row = ring[static_cast<std::size_t>(s)];
-        row.data.reserve(slot_capacity[static_cast<std::size_t>(s)]);
+        row.data.resize(slot_capacity[static_cast<std::size_t>(s)]);
         workspace_bytes += row.data.capacity() * sizeof(uint16_t);
     }
 
-    auto prepare_row = [&](int y) {
-        auto& row = ring[static_cast<std::size_t>(y % ring_rows)];
-        row.y = y;
-        row.base_offset = row_begin(y);
-        row.data.resize(static_cast<std::size_t>(row_end(y) - row.base_offset));
-    };
-
     auto horizontal_pixel = [&](int x, int y) {
         auto& row = ring[static_cast<std::size_t>(y % ring_rows)];
-        assert(row.y == y);
 
         const int lo = packed_cost.dmin(x, y);
         const int hi = packed_cost.dmax(x, y);
@@ -240,26 +235,34 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
             const int n_dmin = packed_cost.dmin(xx, y);
             const int n_dmax = packed_cost.dmax(xx, y);
             if (n_dmax > n_dmin) {
-                neighbors[num_neighbors++] = { packed_cost.slice(xx, y), n_dmin, n_dmax };
+                neighbors[num_neighbors++] = {
+                    packed_cost.slice(xx, y), n_dmin, n_dmax
+                };
             }
         }
 
         const uint32_t pixel_offset = packed_cost.offset(x, y);
-        uint16_t* dst = row.data.data() + static_cast<std::size_t>(pixel_offset - row.base_offset);
+        uint16_t* dst =
+            row.data.data() +
+            static_cast<std::size_t>(pixel_offset - row_begin(y));
+
         for (int di = 0; di < D_p; ++di) {
             const int d = lo + di;
             int acc = 0;
             int count = 0;
             for (int k = 0; k < num_neighbors; ++k) {
                 if (d >= neighbors[k].dmin && d < neighbors[k].dmax) {
-                    const uint16_t c = neighbors[k].slice[d - neighbors[k].dmin];
+                    const uint16_t c =
+                        neighbors[k].slice[d - neighbors[k].dmin];
                     if (c != kInvalidCost) {
                         acc += c;
                         ++count;
                     }
                 }
             }
-            dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
+            dst[di] = (count > 0)
+                ? static_cast<uint16_t>(acc / count)
+                : kInvalidCost;
         }
     };
 
@@ -284,16 +287,20 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
 
         int num_neighbors = 0;
         for (int yy = y0; yy <= y1; ++yy) {
-            const auto& row = ring[static_cast<std::size_t>(yy % ring_rows)];
-            assert(row.y == yy);
+            const auto& row =
+                ring[static_cast<std::size_t>(yy % ring_rows)];
 
             const int n_dmin = packed_cost.dmin(x, yy);
             const int n_dmax = packed_cost.dmax(x, yy);
             if (n_dmax > n_dmin) {
                 const uint32_t pixel_offset = packed_cost.offset(x, yy);
                 const uint16_t* slice =
-                    row.data.data() + static_cast<std::size_t>(pixel_offset - row.base_offset);
-                neighbors[num_neighbors++] = { slice, n_dmin, n_dmax };
+                    row.data.data() +
+                    static_cast<std::size_t>(
+                        pixel_offset - row_begin(yy));
+                neighbors[num_neighbors++] = {
+                    slice, n_dmin, n_dmax
+                };
             }
         }
 
@@ -304,14 +311,17 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
             int count = 0;
             for (int k = 0; k < num_neighbors; ++k) {
                 if (d >= neighbors[k].dmin && d < neighbors[k].dmax) {
-                    const uint16_t c = neighbors[k].slice[d - neighbors[k].dmin];
+                    const uint16_t c =
+                        neighbors[k].slice[d - neighbors[k].dmin];
                     if (c != kInvalidCost) {
                         acc += c;
                         ++count;
                     }
                 }
             }
-            dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
+            dst[di] = (count > 0)
+                ? static_cast<uint16_t>(acc / count)
+                : kInvalidCost;
         }
     };
 
@@ -320,42 +330,73 @@ std::size_t CostAggregator::aggregate_hv_packed_streaming(
 #if defined(_OPENMP)
 #pragma omp parallel
         {
-            for (int r = 0; r < h + max_down; ++r) {
-                if (r < h) {
-#pragma omp single
-                    {
-                        prepare_row(r);
-                    }
+            for (int block_start = 0;
+                 block_start < h;
+                 block_start += batch_rows) {
+                const int block_end =
+                    std::min(h, block_start + batch_rows);
 
-#pragma omp for schedule(dynamic, 4)
+                // Horizontal production for a whole row block.  Static
+                // collapsed scheduling removes the per-row dynamic work queue.
+#pragma omp for collapse(2) schedule(static)
+                for (int y = block_start; y < block_end; ++y) {
                     for (int x = 0; x < w; ++x) {
-                        horizontal_pixel(x, r);
+                        horizontal_pixel(x, y);
                     }
                 }
 
-                const int y = r - max_down;
-                if (y >= 0 && y < h) {
-#pragma omp for schedule(dynamic, 4)
+                // Rows whose complete vertical dependency window is now
+                // available can be consumed as one block.
+                const int vert_begin =
+                    std::max(0, block_start - max_down);
+                const int vert_end =
+                    std::max(0, std::min(h, block_end - max_down));
+
+#pragma omp for collapse(2) schedule(static)
+                for (int y = vert_begin; y < vert_end; ++y) {
                     for (int x = 0; x < w; ++x) {
                         vertical_pixel(x, y);
                     }
                 }
             }
-        }
-#else
-        for (int r = 0; r < h + max_down; ++r) {
-            if (r < h) {
-                prepare_row(r);
-                for (int x = 0; x < w; ++x) {
-                    horizontal_pixel(x, r);
-                }
-            }
 
-            const int y = r - max_down;
-            if (y >= 0 && y < h) {
+            // Flush the final max_down rows after all horizontal rows exist.
+            const int tail_begin = std::max(0, h - max_down);
+#pragma omp for collapse(2) schedule(static)
+            for (int y = tail_begin; y < h; ++y) {
                 for (int x = 0; x < w; ++x) {
                     vertical_pixel(x, y);
                 }
+            }
+        }
+#else
+        for (int block_start = 0;
+             block_start < h;
+             block_start += batch_rows) {
+            const int block_end =
+                std::min(h, block_start + batch_rows);
+
+            for (int y = block_start; y < block_end; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    horizontal_pixel(x, y);
+                }
+            }
+
+            const int vert_begin =
+                std::max(0, block_start - max_down);
+            const int vert_end =
+                std::max(0, std::min(h, block_end - max_down));
+            for (int y = vert_begin; y < vert_end; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    vertical_pixel(x, y);
+                }
+            }
+        }
+
+        const int tail_begin = std::max(0, h - max_down);
+        for (int y = tail_begin; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                vertical_pixel(x, y);
             }
         }
 #endif
