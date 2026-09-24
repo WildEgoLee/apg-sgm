@@ -38,64 +38,81 @@ def write_pgm(file_path: Path, img: np.ndarray):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="KITTI 2015 Dataset Preparation Tool")
-    parser.add_argument("--in_dir", type=str, required=True, help="Directory of KITTI 2015 training set (containing image_2, image_3, disp_occ_0, disp_noc_0)")
-    parser.add_argument("--out_dir", type=str, default="benchmarks/data/kitti2015", help="Output directory")
-    parser.add_argument("--manifest", type=str, default="benchmarks/manifests/kitti2015.txt", help="Manifest output path")
+    parser = argparse.ArgumentParser(description="KITTI 2012/2015 Dataset Preparation Tool")
+    parser.add_argument("--in_dir", type=str, required=True, help="Directory of KITTI training set (containing image_2/3 or colored_0/1, and disp_occ/disp_noc)")
+    parser.add_argument("--out_dir", type=str, default="", help="Output directory (default: benchmarks/data/kitti<year>)")
+    parser.add_argument("--manifest", type=str, default="", help="Manifest output path (default: benchmarks/manifests/kitti<year>.txt)")
     parser.add_argument("--max_pairs", type=int, default=0, help="Maximum number of pairs to process (0 = all pairs, default: 0)")
     parser.add_argument("--dmax", type=int, default=192, help="Minimum max disparity search range for KITTI (default 192)")
     args = parser.parse_args()
 
     in_dir = Path(args.in_dir)
-    out_dir = Path(args.out_dir)
-    manifest_path = Path(args.manifest)
+
+    # Detect KITTI 2015 vs KITTI 2012 layout
+    if (in_dir / "disp_occ_0").exists():
+        version = "2015"
+        case_prefix = "kitti15"
+        img_l_dir = in_dir / "image_2"
+        img_r_dir = in_dir / "image_3"
+        disp_occ_dir = in_dir / "disp_occ_0"
+        disp_noc_dir = in_dir / "disp_noc_0"
+    elif (in_dir / "disp_occ").exists():
+        version = "2012"
+        case_prefix = "kitti12"
+        img_l_dir = (in_dir / "colored_0") if (in_dir / "colored_0").exists() else (in_dir / "image_0")
+        img_r_dir = (in_dir / "colored_1") if (in_dir / "colored_1").exists() else (in_dir / "image_1")
+        disp_occ_dir = in_dir / "disp_occ"
+        disp_noc_dir = in_dir / "disp_noc"
+    else:
+        raise FileNotFoundError(f"Could not identify KITTI 2012 or 2015 layout in {in_dir} (expected disp_occ_0 or disp_occ)")
+
+    default_out = f"benchmarks/data/kitti{version}"
+    default_manifest = f"benchmarks/manifests/kitti{version}.txt"
+
+    out_dir = Path(args.out_dir) if args.out_dir else Path(default_out)
+    manifest_path = Path(args.manifest) if args.manifest else Path(default_manifest)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    img2_dir = in_dir / "image_2"
-    img3_dir = in_dir / "image_3"
-    disp_occ_dir = in_dir / "disp_occ_0"
-    disp_noc_dir = in_dir / "disp_noc_0"
-
     # Fail-fast validation checks: require all four essential directories
-    if not img2_dir.exists():
-        raise FileNotFoundError(f"Missing required KITTI left image directory: {img2_dir}")
-    if not img3_dir.exists():
-        raise FileNotFoundError(f"Missing required KITTI right image directory: {img3_dir}")
+    if not img_l_dir.exists():
+        raise FileNotFoundError(f"Missing required KITTI left image directory: {img_l_dir}")
+    if not img_r_dir.exists():
+        raise FileNotFoundError(f"Missing required KITTI right image directory: {img_r_dir}")
     if not disp_occ_dir.exists():
         raise FileNotFoundError(f"Missing required KITTI ground truth disparity directory: {disp_occ_dir}")
     if not disp_noc_dir.exists():
         raise FileNotFoundError(f"Missing required KITTI non-occluded disparity directory: {disp_noc_dir}")
 
-    left_files = sorted(list(img2_dir.glob("*_10.png")))
+    left_files = sorted(list(img_l_dir.glob("*_10.png")))
     if not left_files:
-        left_files = sorted(list(img2_dir.glob("*.png")))
+        left_files = sorted(list(img_l_dir.glob("*.png")))
 
     if not left_files:
-        raise FileNotFoundError(f"No PNG image files found in {img2_dir}")
+        raise FileNotFoundError(f"No PNG image files found in {img_l_dir}")
 
     selected_files = left_files[: args.max_pairs] if args.max_pairs > 0 else left_files
 
     manifest_lines = [
-        "# APG-SGM KITTI 2015 Dataset Manifest",
+        f"# APG-SGM KITTI {version} Dataset Manifest",
         f"# Total pairs: {len(selected_files)}",
         "# Format: case_name left_img right_img gt_disp [dmax] [dmin] [vis_mask]",
     ]
 
     for lf in selected_files:
         pair_id = lf.stem
-        case_name = f"kitti15_{pair_id}"
-        rf = img3_dir / lf.name
+        case_name = f"{case_prefix}_{pair_id}"
+        rf = img_r_dir / lf.name
         if not rf.exists():
             raise FileNotFoundError(f"Missing corresponding right image for {lf.name}: {rf}")
 
         gt_path = disp_occ_dir / lf.name
         if not gt_path.exists():
-            raise FileNotFoundError(f"Missing required GT file (disp_occ_0) for {lf.name}: {gt_path}")
+            raise FileNotFoundError(f"Missing required GT file (disp_occ) for {lf.name}: {gt_path}")
 
         noc_path = disp_noc_dir / lf.name
         if not noc_path.exists():
-            raise FileNotFoundError(f"Missing required non-occluded GT file (disp_noc_0) for {lf.name}: {noc_path}")
+            raise FileNotFoundError(f"Missing required non-occluded GT file (disp_noc) for {lf.name}: {noc_path}")
 
         print(f"Processing KITTI pair: {case_name}...")
         im_l = Image.open(lf).convert("L")

@@ -566,6 +566,24 @@ int main(int argc, char** argv) {
                 std::string prefix = save_disp_dir + "/" + c.name + "_" + id_str;
                 apg::save_pfm(prefix + "_disp.pfm", bufs.disparity);
                 apg::save_disparity_preview(prefix + "_disp.pgm", bufs.disparity, static_cast<float>(c.dmax));
+                if (cfg.prior.enable && has_gt && m.has_range) {
+                    apg::Image8 miss_img(w, h, 1);
+                    for (int y = 0; y < h; ++y) {
+                        for (int x = 0; x < w; ++x) {
+                            const float g = gt_disp.at(x, y);
+                            if (g < 0.0f || !std::isfinite(g)) continue;
+                            const int xr = x - static_cast<int>(std::round(g));
+                            const bool is_matchable = (xr >= 0 && xr < w);
+                            const bool is_vis = has_vis ? (vis_mask.at(x, y) >= 200) : is_matchable;
+                            if (is_vis) {
+                                if (g < bufs.range.dmin.at(x, y) || g >= bufs.range.dmax.at(x, y)) {
+                                    miss_img.at(x, y) = 255;
+                                }
+                            }
+                        }
+                    }
+                    apg::save_pgm(prefix + "_miss.pgm", miss_img);
+                }
             }
         }
     }
