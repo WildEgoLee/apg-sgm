@@ -98,3 +98,53 @@ print(f"Support Grid Recall@1:    {sum(supp_grid_rec_list)/len(supp_grid_rec_lis
 print(f"Prior Space Reduction:    {sum(prior_red_list)/len(prior_red_list):.2f}%")
 print(f"Delta Bad-2 (D -> E):     {sum(delta_bad2_list)/len(delta_bad2_list):+.2f}% (Max increase: {max(delta_bad2_list):+.2f}%)")
 print(f"Delta EPE   (D -> E):     {sum(delta_epe_list)/len(delta_epe_list):+.3f} px")
+
+if len(sys.argv) >= 3:
+    packed_file = sys.argv[2]
+    with open(packed_file) as pf:
+        p_rows = list(csv.DictReader(pf))
+    by_case_p = {}
+    for r in p_rows:
+        by_case_p.setdefault(r['case'], {})[r['ablation_id']] = r
+
+    print("\n" + "=" * 115)
+    print("DENSE vs PACKED BACKEND COMPARISON (Mode E: Prior + 4SGM)")
+    print("=" * 115)
+    cmp_hdr = f"{'Scene':<14} {'Dense Peak':<12} {'Packed Peak':<12} {'Peak Red%':<10} {'Dense SGM':<11} {'Pack SGM':<10} {'SGM Speed':<10} {'Dense Total':<12} {'Pack Total':<12} {'Pipe Speed':<10}"
+    print(cmp_hdr)
+    print("-" * len(cmp_hdr))
+
+    peak_red_list = []
+    sgm_spd_list = []
+    tot_spd_list = []
+
+    for case in by_case:
+        if case not in by_case_p: continue
+        d_e = by_case[case].get('E')
+        p_e = by_case_p[case].get('E')
+        if not d_e or not p_e: continue
+
+        d_peak = float(d_e['peak_bytes']) / (1024 * 1024)
+        p_peak = float(p_e['peak_bytes']) / (1024 * 1024)
+        peak_red = (1.0 - p_peak / d_peak) * 100.0 if d_peak > 0 else 0.0
+
+        d_sgm = float(d_e['time_sgm_ms'])
+        p_sgm = float(p_e['time_sgm_ms'])
+        sgm_spd = (d_sgm / p_sgm) if p_sgm > 0 else 1.0
+
+        d_tot = float(d_e['time_total_ms'])
+        p_tot = float(p_e['time_total_ms'])
+        tot_spd = (d_tot / p_tot) if p_tot > 0 else 1.0
+
+        peak_red_list.append(peak_red)
+        sgm_spd_list.append(sgm_spd)
+        tot_spd_list.append(tot_spd)
+
+        print(f"{case:<14} {d_peak:8.2f} MB   {p_peak:8.2f} MB   {peak_red:6.2f}%    {d_sgm:7.2f} ms  {p_sgm:6.2f} ms  {sgm_spd:5.2f}x      {d_tot:8.2f} ms  {p_tot:8.2f} ms  {tot_spd:5.2f}x")
+
+    print("-" * len(cmp_hdr))
+    if peak_red_list:
+        print(f"Mean Peak Memory Reduction: {sum(peak_red_list)/len(peak_red_list):.2f}% (min: {min(peak_red_list):.2f}%, max: {max(peak_red_list):.2f}%)")
+        print(f"Mean SGM Speedup:           {sum(sgm_spd_list)/len(sgm_spd_list):.2f}x (min: {min(sgm_spd_list):.2f}x, max: {max(sgm_spd_list):.2f}x)")
+        print(f"Mean Pipeline Speedup:      {sum(tot_spd_list)/len(tot_spd_list):.2f}x (min: {min(tot_spd_list):.2f}x, max: {max(tot_spd_list):.2f}x)")
+
