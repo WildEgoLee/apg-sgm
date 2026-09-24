@@ -81,6 +81,12 @@ private:
 using CostVolume = CostVolumeT<uint16_t>;
 using CostVolume32 = CostVolumeT<uint32_t>;
 
+} // namespace apg
+
+#include "apg_sgm/packed_volume.hpp"
+
+namespace apg {
+
 struct PipelineBuffers {
     Image8 left;
     Image8 right;
@@ -104,6 +110,8 @@ struct PipelineBuffers {
     CostVolume cost;
     CostVolume32 cost32;
     CostVolume cost_right;
+    PackedCostVolume16 packed_cost;
+    PackedCostVolume32 packed_cost32;
     Image32f disparity;
     Image32f d_before_refine;
     Image32f d_after_refine;

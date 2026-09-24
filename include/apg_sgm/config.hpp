@@ -70,6 +70,7 @@ struct PipelineConfig {
     int min_disparity = 0;
     int max_disparity = 128;
     int num_threads = 0;
+    bool use_packed_volume = false;
 
     CostParams cost;
     AggregationParams aggregation;

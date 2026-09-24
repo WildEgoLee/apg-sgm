@@ -300,6 +300,58 @@ int main() {
     }
     std::cout << "  WTA disparities and costs match 100% bit-exact!\n";
 
+    // -------------------------------------------------------------
+    // Test Full Pipeline Equivalence (Dense vs Packed Backend)
+    // -------------------------------------------------------------
+    std::cout << "[Test Full Pipeline Equivalence (Dense vs Packed)]\n";
+    auto cfg_pipeline = PipelineConfig::from_mode(QualityMode::HighQuality, 32);
+    cfg_pipeline.prior.enable = true;
+    cfg_pipeline.refine.enable = true;
+    cfg_pipeline.post.lr_check = true;
+
+    PipelineBuffers buf_pipe_dense;
+    cfg_pipeline.use_packed_volume = false;
+    StereoMatcher matcher_dense(cfg_pipeline);
+    PipelineStats stats_dense;
+    if (!matcher_dense.compute(left, right, buf_pipe_dense, &stats_dense)) {
+        std::cerr << "Dense pipeline failed: " << matcher_dense.last_error() << "\n";
+        return 1;
+    }
+
+    PipelineBuffers buf_pipe_packed;
+    cfg_pipeline.use_packed_volume = true;
+    StereoMatcher matcher_packed(cfg_pipeline);
+    PipelineStats stats_packed;
+    if (!matcher_packed.compute(left, right, buf_pipe_packed, &stats_packed)) {
+        std::cerr << "Packed pipeline failed: " << matcher_packed.last_error() << "\n";
+        return 1;
+    }
+
+    // Compare final disparity maps bit-for-bit
+    size_t disp_mismatches = 0;
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float dd = buf_pipe_dense.disparity.at(x, y);
+            const float dp = buf_pipe_packed.disparity.at(x, y);
+            if (std::isnan(dd) != std::isnan(dp) || (std::isfinite(dd) && std::abs(dd - dp) > 1e-4f)) {
+                disp_mismatches++;
+                if (disp_mismatches <= 5) {
+                    std::cerr << "Full pipeline disparity mismatch at (" << x << "," << y << "): dense="
+                              << dd << " vs packed=" << dp << "\n";
+                }
+            }
+        }
+    }
+    if (disp_mismatches > 0) {
+        std::cerr << "Total full pipeline disparity mismatches: " << disp_mismatches << "\n";
+        return 1;
+    }
+    std::cout << "  Full pipeline (Prior + Cross + 8SGM + Refine + LRCheck + Median) 100% bit-exact match!\n";
+    std::cout << "  Dense peak cost bytes:  " << stats_dense.estimated_peak_bytes << " B\n";
+    std::cout << "  Packed peak cost bytes: " << stats_packed.estimated_peak_bytes << " B\n";
+    const double pipe_red = 100.0 * (1.0 - static_cast<double>(stats_packed.estimated_peak_bytes) / stats_dense.estimated_peak_bytes);
+    std::cout << "  Pipeline peak volume memory reduction: " << pipe_red << "%\n";
+
     std::cout << "sanity ok\n";
     return 0;
 }

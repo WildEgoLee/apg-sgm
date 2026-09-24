@@ -73,6 +73,62 @@ void wta_right_from_left_volume(const PipelineConfig& cfg, const CostVolume& vol
     }
 }
 
+void wta_right_from_packed_volume(const PipelineConfig& cfg, const PackedCostVolume16& vol,
+                                  Image32f& disp_right) {
+    const int w = vol.width();
+    const int h = vol.height();
+    const int d0 = cfg.min_disparity;
+    const int D = cfg.max_disparity - cfg.min_disparity;
+    disp_right = Image32f(w, h, -1.f);
+    for (int y = 0; y < h; ++y) {
+        for (int xr = 0; xr < w; ++xr) {
+            int best_d = -1;
+            uint32_t best = UINT32_MAX;
+            for (int d = d0; d < d0 + D; ++d) {
+                const int xl = xr + d;
+                if (xl < 0 || xl >= w) continue;
+                if (!vol.contains(xl, y, d)) continue;
+                const uint16_t c = vol.at(xl, y, d);
+                if (c == kInvalidCost) continue;
+                if (c < best) {
+                    best = c;
+                    best_d = d;
+                }
+            }
+            if (best_d >= 0) {
+                float dval = static_cast<float>(best_d);
+                if (cfg.post.subpixel) {
+                    const int xl_m = xr + best_d - 1;
+                    const int xl_0 = xr + best_d;
+                    const int xl_p = xr + best_d + 1;
+                    if (xl_m >= 0 && xl_m < w &&
+                        xl_0 >= 0 && xl_0 < w &&
+                        xl_p >= 0 && xl_p < w &&
+                        vol.contains(xl_m, y, best_d - 1) &&
+                        vol.contains(xl_0, y, best_d) &&
+                        vol.contains(xl_p, y, best_d + 1)) {
+                        const uint16_t cm = vol.at(xl_m, y, best_d - 1);
+                        const uint16_t c0 = vol.at(xl_0, y, best_d);
+                        const uint16_t cp = vol.at(xl_p, y, best_d + 1);
+                        if (cm != kInvalidCost && c0 != kInvalidCost && cp != kInvalidCost) {
+                            const float fcm = static_cast<float>(cm);
+                            const float fc0 = static_cast<float>(c0);
+                            const float fcp = static_cast<float>(cp);
+                            const float denom = fcm - 2.f * fc0 + fcp;
+                            if (std::abs(denom) > 1e-6f) {
+                                float delta = 0.5f * (fcm - fcp) / denom;
+                                delta = clampf(delta, -0.5f, 0.5f);
+                                dval += delta;
+                            }
+                        }
+                    }
+                }
+                disp_right.at(xr, y) = dval;
+            }
+        }
+    }
+}
+
 } // namespace
 
 StereoMatcher::StereoMatcher(PipelineConfig cfg) : cfg_(std::move(cfg)) {}
@@ -117,24 +173,66 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
     const auto t1 = time_now();
     prior.estimate(cfg_, out);
     const auto t2 = time_now();
-    cost.compute_volume(cfg_, out);
-    const auto t3 = time_now();
-
-    // Compute right disparity from raw/local cost volume BEFORE left Cross-arm aggregation
-    wta_right_from_left_volume(cfg_, out.cost, out.disparity_right);
-    const auto t4 = time_now();
-
-    agg.aggregate(cfg_, out);
-    const auto t5 = time_now();
-
-    // Optimize left volume with SGM streaming into out.cost32
-    sgm.optimize(cfg_, out);
-    const auto t6 = time_now();
 
     Image32f best, second;
-    sgm.winner_take_all(cfg_, out.cost32, out.range, out.disparity, &best, &second);
-    const auto t7 = time_now();
 
+    double t_cost_ms = 0.0;
+    double t_right_wta_ms = 0.0;
+    double t_cross_ms = 0.0;
+    double t_sgm_ms = 0.0;
+    double t_wta_ms = 0.0;
+
+    if (cfg_.use_packed_volume) {
+        auto layout = PackedVolumeLayout::from_range(out.range);
+        out.packed_cost.allocate(layout, kInvalidCost);
+        out.packed_cost32.allocate(layout, 0);
+
+        cost.compute_volume_packed(cfg_, out, out.packed_cost);
+        const auto t3 = time_now();
+
+        wta_right_from_packed_volume(cfg_, out.packed_cost, out.disparity_right);
+        const auto t4 = time_now();
+
+        agg.aggregate_packed(cfg_, out.left_gray, out.packed_cost);
+        const auto t5 = time_now();
+
+        sgm.optimize_packed(cfg_, out.left_gray, out.packed_cost, out.packed_cost32);
+        const auto t6 = time_now();
+
+        sgm.winner_take_all_packed(cfg_, out.packed_cost32, out.disparity, &best, &second);
+        const auto t7 = time_now();
+
+        t_cost_ms = elapsed_ms(t2, t3);
+        t_right_wta_ms = elapsed_ms(t3, t4);
+        t_cross_ms = elapsed_ms(t4, t5);
+        t_sgm_ms = elapsed_ms(t5, t6);
+        t_wta_ms = elapsed_ms(t6, t7);
+    } else {
+        cost.compute_volume(cfg_, out);
+        const auto t3 = time_now();
+
+        // Compute right disparity from raw/local cost volume BEFORE left Cross-arm aggregation
+        wta_right_from_left_volume(cfg_, out.cost, out.disparity_right);
+        const auto t4 = time_now();
+
+        agg.aggregate(cfg_, out);
+        const auto t5 = time_now();
+
+        // Optimize left volume with SGM streaming into out.cost32
+        sgm.optimize(cfg_, out);
+        const auto t6 = time_now();
+
+        sgm.winner_take_all(cfg_, out.cost32, out.range, out.disparity, &best, &second);
+        const auto t7 = time_now();
+
+        t_cost_ms = elapsed_ms(t2, t3);
+        t_right_wta_ms = elapsed_ms(t3, t4);
+        t_cross_ms = elapsed_ms(t4, t5);
+        t_sgm_ms = elapsed_ms(t5, t6);
+        t_wta_ms = elapsed_ms(t6, t7);
+    }
+
+    const auto t_wta_done = time_now();
     conf.estimate(cfg_, out, best, second);
     const auto t8 = time_now();
 
@@ -151,18 +249,23 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
     if (stats) {
         stats->timing.aux_ms = elapsed_ms(t0, t1);
         stats->timing.prior_ms = elapsed_ms(t1, t2);
-        stats->timing.cost_ms = elapsed_ms(t2, t3);
-        stats->timing.right_wta_ms = elapsed_ms(t3, t4);
-        stats->timing.cross_ms = elapsed_ms(t4, t5);
-        stats->timing.sgm_ms = elapsed_ms(t5, t6);
-        stats->timing.wta_ms = elapsed_ms(t6, t7);
-        stats->timing.confidence_ms = elapsed_ms(t7, t8);
+        stats->timing.cost_ms = t_cost_ms;
+        stats->timing.right_wta_ms = t_right_wta_ms;
+        stats->timing.cross_ms = t_cross_ms;
+        stats->timing.sgm_ms = t_sgm_ms;
+        stats->timing.wta_ms = t_wta_ms;
+        stats->timing.confidence_ms = elapsed_ms(t_wta_done, t8);
         stats->timing.refine_ms = elapsed_ms(t8, t9);
         stats->timing.post_ms = elapsed_ms(t9, t10);
         stats->timing.total_ms = elapsed_ms(t_total_start, t10);
 
-        stats->cost_bytes = out.cost.bytes();
-        stats->aggregated_cost_bytes = out.cost32.bytes();
+        if (cfg_.use_packed_volume) {
+            stats->cost_bytes = out.packed_cost.bytes();
+            stats->aggregated_cost_bytes = out.packed_cost32.bytes();
+        } else {
+            stats->cost_bytes = out.cost.bytes();
+            stats->aggregated_cost_bytes = out.cost32.bytes();
+        }
         stats->estimated_peak_bytes = stats->cost_bytes + stats->aggregated_cost_bytes;
 
         const int w = out.disparity.width();

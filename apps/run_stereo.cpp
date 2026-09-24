@@ -32,6 +32,7 @@ int main(int argc, char** argv) {
     QualityMode mode = QualityMode::Balanced;
     int dmax = 128;
     int threads = 0;
+    bool use_packed = false;
     for (int i = 4; i < argc; ++i) {
         if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             mode = parse_mode(argv[++i]);
@@ -39,6 +40,8 @@ int main(int argc, char** argv) {
             dmax = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             threads = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--packed") == 0) {
+            use_packed = true;
         } else {
             usage(argv[0]);
             return 1;
@@ -57,6 +60,7 @@ int main(int argc, char** argv) {
 
     PipelineConfig cfg = PipelineConfig::from_mode(mode, dmax);
     cfg.num_threads = threads;
+    cfg.use_packed_volume = use_packed;
     StereoMatcher matcher(cfg);
     PipelineBuffers buf;
 

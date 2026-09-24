@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
     int warmup_runs = 2;
     int repeat_runs = 5;
     int num_threads = 0;
+    bool use_packed = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -97,6 +98,8 @@ int main(int argc, char** argv) {
             repeat_runs = std::max(1, std::stoi(argv[++i]));
         } else if (arg == "--threads" && i + 1 < argc) {
             num_threads = std::max(0, std::stoi(argv[++i]));
+        } else if (arg == "--packed") {
+            use_packed = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: apg-benchmark [options]\n"
                       << "Options:\n"
@@ -107,6 +110,7 @@ int main(int argc, char** argv) {
                       << "  --warmup <N>          Warmup runs before timing (default: 2)\n"
                       << "  --repeat <N>          Timed runs per test case (default: 5, reports median)\n"
                       << "  --threads <N>         Number of OpenMP threads (default: auto)\n"
+                      << "  --packed              Use packed cost volume backend (Sigma_p D(p))\n"
                       << "  --help, -h            Show this help message\n";
             return 0;
         }
@@ -208,6 +212,7 @@ int main(int argc, char** argv) {
             apg::PipelineConfig cfg = apg::make_ablation_config(aid, c.dmax);
             cfg.min_disparity = c.dmin;
             cfg.max_disparity = c.dmax;
+            cfg.use_packed_volume = use_packed;
             if (num_threads > 0) {
                 cfg.num_threads = num_threads;
             }
