@@ -68,3 +68,39 @@ The follow-up used one temporary benchmark binary with a runtime switch: A execu
 The geometric mean across all six scene/mode pipeline cells was `1.0130x`. The unmodified Aux stage varied substantially across modes, so its ratios are not attributed to this change. The earlier `0.94–0.95x` Cross result did not reproduce in the same binary. A focused second Vintage/E ABBA/BAAB sample (10 more pairs) measured WTA at `0.99x` median (`p25=0.96x`, `p75=1.00x`), versus `0.95x` in the first sample; the combined 20-pair median was `0.9896x`. This is at most a small stage-level shift (about 0.24 ms on a roughly 426 ms pipeline), not a repeatable material pipeline regression. Confidence stayed near 1.00x, and the six-cell total stayed above the gate. The Path4 refiner timing is only 0.05–0.26 ms, so its `0.9445x` ratio is dominated by timing resolution and should not be read as a meaningful regression. All exported quality and memory fields matched between A and B; previous bit-exact and backend-parity checks remain green.
 
 **Final status:** P2.1a (packed `cost32` single initialization) was squash-merged to `main` as `b0751fe` after GCC and Clang CI passed. The earlier separate-build `0.99446x` total and Cross slowdown remain recorded as exploratory data; they did not reproduce in the controlled same-binary attribution. P2.1b (per-worker cardinal `PathState` reuse) is rejected; P2.2 (`prev = cur` state-copy removal) is next and has not started.
+
+## V3 Priority 2.2: Packed `PathState` ownership swap
+
+**Status:** implemented on `codex/p2-2-packed-state-swap`; local correctness and three-scene quick performance gates pass. Not merged.
+
+Only `process_pixel_packed()` changed. Its three state-completion paths now swap `prev` and `cur`: the empty-state (`D_c <= 0`) path, the first-pixel/empty-previous path, and the normal recurrence path. Dense `process_pixel()` remains unchanged. Every call resets `dmin`, `dmax`, and `min_val`; for `D_c > 0`, both initialization and recurrence loops overwrite every `cur.vals[0..D_c)` entry, including invalid costs. For `D_c <= 0`, `resize(0)` and the metadata reset produce the complete empty state. The swap therefore retains the two vector capacities without carrying logical recurrence values forward.
+
+Correctness checks on the MSVC Release build passed CTest 4/4. Dense/Packed backend verification passed 6/6 bit-exact cases for E and G across ArtL, Piano, and Vintage. The isolated Packed SGM accumulator hash also matched baseline on every scene/mode cell.
+
+The available local data was the Middlebury Eval3 `trainingQ` ArtL/Piano/Vintage subset from the MiddleEval archives. Inputs were converted to grayscale PGM under ignored `build` outputs. Results below use Q-resolution inputs with `dmax` 32/40/96; they are a quick gate, not a full-resolution F-data benchmark. All measurements used 16 threads and MSVC Release with OpenMP 2.0.
+
+The isolated optimizer comparison used baseline `1d2c02f` and the P2.2 candidate. Each process computed its Packed inputs before timing; the timed loop called `optimize_packed()` directly, retaining its production accumulator initialization. Each invocation used two warmups and 20 timed samples; five interleaved ABBA/BAAB blocks compared baseline and candidate. The table shows the median of invocation medians and the p25–p75 range across invocations, plus the geometric mean of paired speedups (`baseline / candidate`):
+
+| Scene/mode | Baseline median (p25–p75) ms | Candidate median (p25–p75) ms | Optimizer speedup |
+| --- | ---: | ---: | ---: |
+| ArtL / E (Path4) | 9.015 (8.902–9.464) | 6.406 (6.242–6.641) | 1.397x |
+| Piano / E (Path4) | 33.421 (33.037–33.601) | 25.195 (24.753–25.591) | 1.334x |
+| Vintage / E (Path4) | 57.314 (55.391–58.463) | 41.778 (40.723–42.746) | 1.340x |
+| ArtL / G (Path8) | 74.875 (74.225–74.954) | 75.014 (74.612–75.052) | 1.000x |
+| Piano / G (Path8) | 273.534 (270.254–273.860) | 266.917 (265.210–268.412) | 1.028x |
+| Vintage / G (Path8) | 455.189 (443.435–466.861) | 450.095 (439.906–459.286) | 1.009x |
+| **Geometric mean** | — | — | **Path4 1.357x; Path8 1.012x** |
+
+The paired pipeline check used packed E/G, one warmup and three timed repeats per invocation, and four balanced ABBA/BAAB blocks (eight adjacent pairs per scene/mode). The reported SGM and total ratios are geometric means of those paired samples:
+
+| Scene/mode | SGM speedup | Pipeline speedup |
+| --- | ---: | ---: |
+| ArtL / E | 1.256x | 1.055x |
+| Piano / E | 1.257x | 1.036x |
+| Vintage / E | 1.228x | 1.019x |
+| ArtL / G | 1.014x | 1.005x |
+| Piano / G | 1.029x | 1.012x |
+| Vintage / G | 1.026x | 1.007x |
+| **Geometric mean** | **Path4 1.247x; Path8 1.023x** | **Path4 1.037x; Path8 1.008x; all six cells 1.022x** |
+
+All 74 non-timing CSV fields matched in 48 paired pipeline comparisons. An earlier one-sample Vintage/G pass showed a large slowdown across SGM and several unchanged earlier stages. It did not reproduce: a focused eight-pair repeat-3 check measured 0.999x SGM and 0.998x pipeline geometric mean (pipeline median paired ratio 1.011x), and the balanced full matrix above showed no repeatable regression.
