@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace apg {
@@ -108,7 +109,7 @@ inline void process_pixel_packed(int x, int y, bool has_prev, int px, int py,
     cur.min_val = kPathInf;
 
     if (D_c <= 0) {
-        prev = cur;
+        std::swap(prev, cur);
         return;
     }
 
@@ -130,7 +131,7 @@ inline void process_pixel_packed(int x, int y, bool has_prev, int px, int py,
                 }
             }
         }
-        prev = cur;
+        std::swap(prev, cur);
         return;
     }
 
@@ -182,7 +183,7 @@ inline void process_pixel_packed(int x, int y, bool has_prev, int px, int py,
             a[di] += static_cast<uint32_t>(cur.vals[di]);
         }
     }
-    prev = cur;
+    std::swap(prev, cur);
 }
 
 } // namespace
