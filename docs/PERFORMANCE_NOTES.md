@@ -122,3 +122,54 @@ Full-resolution Middlebury F-resolution evaluation confirmed substantial isolate
     - Pooled sample (all pairs combined, preserving the `0.508x` outlier): **0.9999716x**
 
 Under the pre-established `>= 0.995x` regression gate, the pooled Path8 pipeline ratio confirms no regression even with the worst-case outlier preserved, while Path4 delivers clear end-to-end performance improvement. PR #5 was merged into `main` as `6c2370b`.
+
+## V3 Priority 2.3: Diagonal workspace reuse rejected
+
+**Decision:** Reject diagonal `seen` workspace pooling and lifecycle reuse without code modifications.
+
+A micro-profiling audit of Path8 directional timing and internal diagonal breakdown was conducted across Middlebury Q-resolution (ArtL, Piano, Vintage) and F-resolution (ArtL, 1388x1108, dmax=256) at 16 threads:
+- `seen` allocation and zero-initialization (`std::vector<uint8_t> seen(w * h, 0)`) across all 4 diagonal paths totaled:
+  - ArtL (Q-res): 0.027 ms (0.038% of Path8)
+  - Piano (Q-res): 0.083 ms (0.036% of Path8)
+  - Vintage (Q-res): 0.112 ms (0.030% of Path8)
+  - ArtL (F-res): 1.192 ms (0.0287% of Path8)
+- Even if `seen` workspace overhead were completely reduced to zero, the theoretical speedup ceiling is approximately `1.0003x`.
+- The profile demonstrated that Path8's dominant bottleneck was not workspace allocation, but rather that cardinal paths were parallelized across 16 threads while the 4 diagonal paths were executed completely serially on a single thread (accounting for 88.5%–92.0% of total Path8 runtime).
+- Diagonal traversal has poorer spatial locality in image order, while packed ragged slices also have variable physical offsets; cache-miss impact has not yet been measured directly.
+- Consequently, P2.3 workspace reuse is rejected, concluding Priority 2.
+
+## V3 Priority 3.0: Packed diagonal-ray OpenMP parallelization
+
+**Status:** MERGED as `6e7f99e` (PR #6). CTest 4/4 passed, GCC/Clang CI passed, and full-resolution Middlebury F pipeline paired gate passed.
+
+### Implementation
+
+- Diagonal aggregation paths in `aggregate_path_packed()` now explicitly enumerate border origins ($W + H - 1$ independent rays per direction) and parallelize execution across rays with `#pragma omp parallel for schedule(dynamic, 1)`.
+- Border-origin ray mapping:
+  - `(+1, +1)`: Top edge $(r, 0)$ and Left edge $(0, r - w + 1)$
+  - `(+1, -1)`: Bottom edge $(r, h - 1)$ and Left edge $(0, h - 1 - (r - w + 1))$
+  - `(-1, +1)`: Top edge $(r, 0)$ and Right edge $(w - 1, r - w + 1)$
+  - `(-1, -1)`: Bottom edge $(r, h - 1)$ and Right edge $(w - 1, h - 1 - (r - w + 1))$
+- `seen` vector tracking and redundant backwards boundary searches were eliminated as a natural consequence of ray enumeration.
+- Per-worker scratch reuse was intentionally omitted to cleanly isolate ray-level parallelism.
+- The Dense backend was kept frozen as a golden reference.
+
+### Verification & Gate Results
+
+- **Correctness**:
+  - CTest: 4/4 passed (`sanity`, `synthetic`, `ablation`, `headers`).
+  - Dual backend (Dense vs Packed) parity: 100% bit-exact across synthetic cases in E and G modes.
+  - Dual backend parity on full-resolution Middlebury F: 100% bit-exact across ArtL, Piano, Vintage in G mode (Path8).
+  - Isolated SGM accumulator hashes matched baseline bit-exact on all Q and F scenes.
+  - Across 18 paired pipeline comparisons (54 scene evaluations), all 74 non-timing quality and metric fields matched 100% bit-exactly.
+- **Full-Resolution Middlebury F Pipeline Paired Benchmark (G-only, 16 threads)**:
+  - Fixed binaries across 3 balanced ABBA/BAAB blocks (6 adjacent pairs per scene, 18 pairs total, zero sample deletions):
+
+| Scene | Baseline SGM (ms) | Candidate SGM (ms) | SGM Speedup (Geomean / Median) | Baseline Pipeline (ms) | Candidate Pipeline (ms) | Pipeline Speedup (Geomean / Median) | Quality Fields Match |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ArtL (F)** | ~4900 ms | ~1130 ms | **4.328x** / 4.352x | ~8150 ms | ~4400 ms | **1.853x** / 1.854x | 100% (74/74) |
+| **Piano (F)** | ~18950 ms | ~4470 ms | **4.242x** / 4.230x | ~31450 ms | ~16850 ms | **1.863x** / 1.866x | 100% (74/74) |
+| **Vintage (F)** | ~43480 ms | ~10500 ms | **4.135x** / 4.172x | ~71250 ms | ~38100 ms | **1.861x** / 1.872x | 100% (74/74) |
+| **Overall Pooled** | — | — | **4.2340x** (Gate: >= 2.0x) | — | — | **1.8591x** (Gate: >= 1.10x) | **PASS** |
+
+- **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed.
