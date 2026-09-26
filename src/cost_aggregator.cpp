@@ -1,5 +1,8 @@
 #include "apg_sgm/cost_aggregator.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <vector>
 
 #if defined(_OPENMP)
@@ -142,119 +145,222 @@ void CostAggregator::aggregate(const PipelineConfig& cfg, PipelineBuffers& buf) 
     }
 }
 
+namespace {
+
+// Prefix entry for a single disparity lane.
+// Note: Prefix accumulation runs along the entire row/column dimension.
+// Capacity boundary: max_dim * cost_max <= max_dim * 65535.
+// For Middlebury dimensions (max_dim ~ 3000), total sum <= 1.96e8 << UINT32_MAX (~4.29e9),
+// ensuring uint32_t cannot overflow.
+struct PrefixEntry {
+    uint32_t sum;
+    uint32_t cnt;
+};
+
+struct PrefixWorkspace {
+    std::vector<PrefixEntry> entries;
+    void ensure(size_t max_dim, size_t B) {
+        const size_t n = (max_dim + 1) * B;
+        if (entries.size() < n) {
+            entries.resize(n);
+        }
+    }
+};
+
+} // namespace
+
 void CostAggregator::aggregate_hv_packed(PackedCostVolume16& packed_cost,
                                          PackedCostVolume16& tmp,
                                          const std::vector<int16_t>& Larm, const std::vector<int16_t>& Rarm,
                                          const std::vector<int16_t>& Uarm, const std::vector<int16_t>& Darm) const {
     const int w = packed_cost.width();
     const int h = packed_cost.height();
-
-    struct NeighborInfo {
-        const uint16_t* slice;
-        int dmin;
-        int dmax;
-    };
+    constexpr int B = 16;
 
     // Horizontal pass: packed_cost -> tmp
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel
 #endif
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            const int lo = packed_cost.dmin(x, y);
-            const int hi = packed_cost.dmax(x, y);
-            const int D_p = hi - lo;
-            if (D_p <= 0) continue;
+    {
+        PrefixWorkspace ws;
+        ws.ensure(static_cast<size_t>(w), B);
 
-            const int i = y * w + x;
-            const int x0 = x - Larm[i];
-            const int x1 = x + Rarm[i];
-            const int arm_span = x1 - x0 + 1;
-
-            std::vector<NeighborInfo> heap_neighbors;
-            NeighborInfo stack_neighbors[64];
-            NeighborInfo* neighbors = stack_neighbors;
-            if (arm_span > 64) {
-                heap_neighbors.resize(arm_span);
-                neighbors = heap_neighbors.data();
-            }
-
-            int num_neighbors = 0;
-            for (int xx = x0; xx <= x1; ++xx) {
-                const int n_dmin = packed_cost.dmin(xx, y);
-                const int n_dmax = packed_cost.dmax(xx, y);
-                if (n_dmax > n_dmin) {
-                    neighbors[num_neighbors++] = { packed_cost.slice(xx, y), n_dmin, n_dmax };
+#if defined(_OPENMP)
+#pragma omp for schedule(dynamic, 1)
+#endif
+        for (int y = 0; y < h; ++y) {
+            int row_lo = std::numeric_limits<int>::max();
+            int row_hi = std::numeric_limits<int>::min();
+            for (int x = 0; x < w; ++x) {
+                const int lo = packed_cost.dmin(x, y);
+                const int hi = packed_cost.dmax(x, y);
+                if (hi > lo) {
+                    row_lo = std::min(row_lo, lo);
+                    row_hi = std::max(row_hi, hi);
                 }
             }
+            if (row_lo >= row_hi) continue;
 
-            uint16_t* dst = tmp.slice(x, y);
-            for (int di = 0; di < D_p; ++di) {
-                const int d = lo + di;
-                int acc = 0;
-                int count = 0;
-                for (int k = 0; k < num_neighbors; ++k) {
-                    if (d >= neighbors[k].dmin && d < neighbors[k].dmax) {
-                        const uint16_t c = neighbors[k].slice[d - neighbors[k].dmin];
-                        if (c != kInvalidCost) {
-                            acc += c;
-                            ++count;
+            for (int td = row_lo; td < row_hi; td += B) {
+                const int tb = std::min(B, row_hi - td);
+
+                // Base at x = 0: prefix sum/cnt is 0
+                for (int b = 0; b < tb; ++b) {
+                    ws.entries[b] = {0, 0};
+                }
+
+                // 1D prefix along row y
+                for (int x = 0; x < w; ++x) {
+                    const int lo = packed_cost.dmin(x, y);
+                    const int hi = packed_cost.dmax(x, y);
+                    const size_t prev_base = static_cast<size_t>(x) * B;
+                    const size_t curr_base = static_cast<size_t>(x + 1) * B;
+                    PrefixEntry* const p_prev = ws.entries.data() + prev_base;
+                    PrefixEntry* const p_curr = ws.entries.data() + curr_base;
+
+                    const int o_lo = std::max(td, lo);
+                    const int o_hi = std::min(td + tb, hi);
+
+                    if (o_lo < o_hi) {
+                        const int b_start = o_lo - td;
+                        const int b_end = o_hi - td;
+                        for (int b = 0; b < b_start; ++b) {
+                            p_curr[b] = p_prev[b];
+                        }
+                        const uint16_t* s = packed_cost.slice(x, y) + (o_lo - lo);
+                        for (int b = b_start; b < b_end; ++b) {
+                            const uint16_t c = *s++;
+                            const uint32_t valid = (c != kInvalidCost);
+                            p_curr[b].sum = p_prev[b].sum + (valid ? c : 0);
+                            p_curr[b].cnt = p_prev[b].cnt + valid;
+                        }
+                        for (int b = b_end; b < tb; ++b) {
+                            p_curr[b] = p_prev[b];
+                        }
+                    } else {
+                        for (int b = 0; b < tb; ++b) {
+                            p_curr[b] = p_prev[b];
                         }
                     }
                 }
-                dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
+
+                // Query for each pixel x in row y
+                for (int x = 0; x < w; ++x) {
+                    const int lo = packed_cost.dmin(x, y);
+                    const int hi = packed_cost.dmax(x, y);
+                    const int d_start = std::max(td, lo);
+                    const int d_end = std::min(td + tb, hi);
+                    if (d_start >= d_end) continue;
+
+                    const int i = y * w + x;
+                    const int x0 = x - Larm[i];
+                    const int x1 = x + Rarm[i];
+                    const PrefixEntry* const p_x0 = ws.entries.data() + static_cast<size_t>(x0) * B;
+                    const PrefixEntry* const p_x1 = ws.entries.data() + static_cast<size_t>(x1 + 1) * B;
+
+                    uint16_t* dst = tmp.slice(x, y);
+                    for (int d = d_start; d < d_end; ++d) {
+                        const int b = d - td;
+                        const int di = d - lo;
+                        const uint32_t acc = p_x1[b].sum - p_x0[b].sum;
+                        const uint32_t cnt = p_x1[b].cnt - p_x0[b].cnt;
+                        dst[di] = (cnt > 0) ? static_cast<uint16_t>(acc / cnt) : kInvalidCost;
+                    }
+                }
             }
         }
     }
 
     // Vertical pass: tmp -> packed_cost
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel
 #endif
-    for (int y = 0; y < h; ++y) {
+    {
+        PrefixWorkspace ws;
+        ws.ensure(static_cast<size_t>(h), B);
+
+#if defined(_OPENMP)
+#pragma omp for schedule(dynamic, 4)
+#endif
         for (int x = 0; x < w; ++x) {
-            const int lo = packed_cost.dmin(x, y);
-            const int hi = packed_cost.dmax(x, y);
-            const int D_p = hi - lo;
-            if (D_p <= 0) continue;
-
-            const int i = y * w + x;
-            const int y0 = y - Uarm[i];
-            const int y1 = y + Darm[i];
-            const int arm_span = y1 - y0 + 1;
-
-            std::vector<NeighborInfo> heap_neighbors;
-            NeighborInfo stack_neighbors[64];
-            NeighborInfo* neighbors = stack_neighbors;
-            if (arm_span > 64) {
-                heap_neighbors.resize(arm_span);
-                neighbors = heap_neighbors.data();
-            }
-
-            int num_neighbors = 0;
-            for (int yy = y0; yy <= y1; ++yy) {
-                const int n_dmin = tmp.dmin(x, yy);
-                const int n_dmax = tmp.dmax(x, yy);
-                if (n_dmax > n_dmin) {
-                    neighbors[num_neighbors++] = { tmp.slice(x, yy), n_dmin, n_dmax };
+            int col_lo = std::numeric_limits<int>::max();
+            int col_hi = std::numeric_limits<int>::min();
+            for (int y = 0; y < h; ++y) {
+                const int lo = tmp.dmin(x, y);
+                const int hi = tmp.dmax(x, y);
+                if (hi > lo) {
+                    col_lo = std::min(col_lo, lo);
+                    col_hi = std::max(col_hi, hi);
                 }
             }
+            if (col_lo >= col_hi) continue;
 
-            uint16_t* dst = packed_cost.slice(x, y);
-            for (int di = 0; di < D_p; ++di) {
-                const int d = lo + di;
-                int acc = 0;
-                int count = 0;
-                for (int k = 0; k < num_neighbors; ++k) {
-                    if (d >= neighbors[k].dmin && d < neighbors[k].dmax) {
-                        const uint16_t c = neighbors[k].slice[d - neighbors[k].dmin];
-                        if (c != kInvalidCost) {
-                            acc += c;
-                            ++count;
+            for (int td = col_lo; td < col_hi; td += B) {
+                const int tb = std::min(B, col_hi - td);
+
+                // Base at y = 0: prefix sum/cnt is 0
+                for (int b = 0; b < tb; ++b) {
+                    ws.entries[b] = {0, 0};
+                }
+
+                // 1D prefix along column x
+                for (int y = 0; y < h; ++y) {
+                    const int lo = tmp.dmin(x, y);
+                    const int hi = tmp.dmax(x, y);
+                    const size_t prev_base = static_cast<size_t>(y) * B;
+                    const size_t curr_base = static_cast<size_t>(y + 1) * B;
+                    PrefixEntry* const p_prev = ws.entries.data() + prev_base;
+                    PrefixEntry* const p_curr = ws.entries.data() + curr_base;
+
+                    const int o_lo = std::max(td, lo);
+                    const int o_hi = std::min(td + tb, hi);
+
+                    if (o_lo < o_hi) {
+                        const int b_start = o_lo - td;
+                        const int b_end = o_hi - td;
+                        for (int b = 0; b < b_start; ++b) {
+                            p_curr[b] = p_prev[b];
+                        }
+                        const uint16_t* s = tmp.slice(x, y) + (o_lo - lo);
+                        for (int b = b_start; b < b_end; ++b) {
+                            const uint16_t c = *s++;
+                            const uint32_t valid = (c != kInvalidCost);
+                            p_curr[b].sum = p_prev[b].sum + (valid ? c : 0);
+                            p_curr[b].cnt = p_prev[b].cnt + valid;
+                        }
+                        for (int b = b_end; b < tb; ++b) {
+                            p_curr[b] = p_prev[b];
+                        }
+                    } else {
+                        for (int b = 0; b < tb; ++b) {
+                            p_curr[b] = p_prev[b];
                         }
                     }
                 }
-                dst[di] = (count > 0) ? static_cast<uint16_t>(acc / count) : kInvalidCost;
+
+                // Query for each pixel y in column x
+                for (int y = 0; y < h; ++y) {
+                    const int lo = packed_cost.dmin(x, y);
+                    const int hi = packed_cost.dmax(x, y);
+                    const int d_start = std::max(td, lo);
+                    const int d_end = std::min(td + tb, hi);
+                    if (d_start >= d_end) continue;
+
+                    const int i = y * w + x;
+                    const int y0 = y - Uarm[i];
+                    const int y1 = y + Darm[i];
+                    const PrefixEntry* const p_y0 = ws.entries.data() + static_cast<size_t>(y0) * B;
+                    const PrefixEntry* const p_y1 = ws.entries.data() + static_cast<size_t>(y1 + 1) * B;
+
+                    uint16_t* dst = packed_cost.slice(x, y);
+                    for (int d = d_start; d < d_end; ++d) {
+                        const int b = d - td;
+                        const int di = d - lo;
+                        const uint32_t acc = p_y1[b].sum - p_y0[b].sum;
+                        const uint32_t cnt = p_y1[b].cnt - p_y0[b].cnt;
+                        dst[di] = (cnt > 0) ? static_cast<uint16_t>(acc / cnt) : kInvalidCost;
+                    }
+                }
             }
         }
     }
