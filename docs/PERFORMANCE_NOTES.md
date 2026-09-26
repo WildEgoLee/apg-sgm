@@ -212,5 +212,55 @@ A micro-profiling audit of Path8 directional timing and internal diagonal breakd
   - Pipeline rankings: SGM 33.63% (#1), Cost 23.82% (#2), Cross 17.18% (#3), Refine 11.10% (#4).
   - Inside Cross, `tmp volume alloc` now represents ~18.5% to 29.3% of stage runtime.
 - **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36215335613).
-- **Next Step**: P3.2b `tmp` PackedCostVolume lifecycle reuse as a separate branch/experiment.
+
+---
+
+### P3.2b: Elimination of Redundant Temporary Packed Volume Initialization
+
+- **Status**: **MERGED as `79ed6ac` (PR #8)**
+- **Baseline**: `99725c4` (Post-P3.2a prefix-sum merge)
+- **Scope**: Replaced `PackedCostVolume16 tmp(packed_cost.layout(), kInvalidCost)` in `CostAggregator::aggregate_packed()` with an uninitialized for-overwrite private workspace `PackedCrossTmp`.
+- **Key Invariants & Safety Guarantees**:
+  1. `tmp` lifetime strictly confined to `CostAggregator::aggregate_packed()` (allocated and freed within the method).
+  2. Zero memory footprint increase: No persistent workspace retained across frames or pipeline phases, strictly preserving the existing peak memory model ($\le 3 \times C16$).
+  3. The horizontal prefix pass unconditionally overwrites every valid packed disparity state in `tmp` before any vertical pass read, guaranteeing memory correctness with uninitialized storage.
+  4. Header stability: `include/` remains untouched; `PackedCrossTmp` is private to `src/cost_aggregator.cpp`.
+
+#### Allocation vs Fill Profiling (`profile_tmp_alloc`)
+
+| Scene | Memory Footprint | Baseline `assign(fill)` | Raw `new uint16_t[]` | Fill Overhead Share |
+| :--- | :---: | :---: | :---: | :---: |
+| **ArtL** | 554.3 MiB | 111.04 ms | **0.01 ms** | **99.99%** |
+| **Piano** | 2118.9 MiB | 425.40 ms | **0.01 ms** | **100.00%** |
+| **Vintage** | 5609.1 MiB | 1147.85 ms | **0.02 ms** | **100.00%** |
+
+#### Performance Results (16 Threads, G-mode, Middlebury 2014 Full-Res F)
+
+| Scene | P3.2a Baseline Cross | P3.2b Cross | Cross Speedup | P3.2a Baseline Pipeline | P3.2b Pipeline | Pipeline Speedup | Bit-Exact |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ArtL (F)** | 417.22 ms | 315.70 ms | **1.322x** (-101.5 ms) | 3554.32 ms | 3474.89 ms | **1.023x** (2.23% faster) | 100% (74/74) |
+| **Piano (F)** | 2201.67 ms | 1859.74 ms | **1.184x** (-341.9 ms) | 13300.78 ms | 12990.29 ms | **1.024x** (2.33% faster) | 100% (74/74) |
+| **Vintage (F)** | 6097.55 ms | 5106.25 ms | **1.194x** (-991.3 ms) | 29355.86 ms | 28561.43 ms | **1.028x** (2.71% faster) | 100% (74/74) |
+| **Scene-Balanced Geomean** | — | — | **1.232x** (Gate: >= 1.08x) | — | — | **1.025x** (Gate: >= 1.02x) | **PASS** |
+| **Pooled Total Sum** | 8716.44 ms | 7281.69 ms | **1.197x** (-1434.8 ms) | 46210.96 ms | 45026.61 ms | **1.026x** (-1184.4 ms) | **PASS** |
+
+#### Cumulative Cross Track Progress (P3.0 Baseline `2ad6d26` -> P3.2b)
+- **Cross stage runtime**:
+  - ArtL: 1444.57 ms -> 364.99 ms (**3.958x**)
+  - Piano: 5964.96 ms -> 1940.34 ms (**3.074x**)
+  - Vintage: 15089.35 ms -> 5322.45 ms (**2.835x**)
+  - Cross execution share collapsed from **35.51% down to 14.69%**.
+- **End-to-end pipeline**:
+  - ArtL: 4517.48 ms -> 3474.89 ms (**1.300x**)
+  - Piano: 16946.61 ms -> 12990.29 ms (**1.305x**)
+  - Vintage: 38344.20 ms -> 28561.43 ms (**1.343x**)
+  - **Cumulative Pipeline Geomean**: **1.316x (31.6% faster end-to-end)**.
+- **Current Pipeline Stage Distribution**:
+  1. **SGM**: ~35.11%
+  2. **Cost**: ~24.46%
+  3. **Cross**: ~14.69%
+  4. **Refine**: ~11.41%
+- **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36216464038).
+- **Next Step**: Conclude Cross Track; transition to **P3.3 Cost-Volume Optimization** (audit discrete exp/LUT bit-exact feasibility).
+
 
