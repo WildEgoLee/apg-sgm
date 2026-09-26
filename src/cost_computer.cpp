@@ -190,9 +190,7 @@ void CostComputer::compute_volume_packed(const PipelineConfig& cfg,
     const int w = buf.left_gray.width();
     const int h = buf.left_gray.height();
     if (!packed_cost.layout() || packed_cost.width() != w || packed_cost.height() != h) {
-        packed_cost.allocate(buf.range, kInvalidCost);
-    } else {
-        packed_cost.fill(kInvalidCost);
+        packed_cost.allocate_for_overwrite(buf.range);
     }
 
     const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;

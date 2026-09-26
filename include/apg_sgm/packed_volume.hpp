@@ -3,6 +3,7 @@
 #include "apg_sgm/search_range.hpp"
 #include "apg_sgm/types.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -67,6 +68,46 @@ class PackedCostVolume {
 public:
     PackedCostVolume() = default;
 
+    PackedCostVolume(const PackedCostVolume& other)
+        : layout_(other.layout_), size_(other.data_ ? other.size_ : 0) {
+        if (size_ > 0) {
+            data_.reset(new T[size_]);
+            std::copy_n(other.data_.get(), size_, data_.get());
+        }
+    }
+
+    PackedCostVolume& operator=(const PackedCostVolume& other) {
+        if (this != &other) {
+            const size_t new_size = other.data_ ? other.size_ : 0;
+            std::unique_ptr<T[]> new_data;
+            if (new_size > 0) {
+                new_data.reset(new T[new_size]);
+                std::copy_n(other.data_.get(), new_size, new_data.get());
+            }
+            layout_ = other.layout_;
+            size_ = new_size;
+            data_ = std::move(new_data);
+        }
+        return *this;
+    }
+
+    PackedCostVolume(PackedCostVolume&& other) noexcept
+        : layout_(std::move(other.layout_)),
+          size_(other.size_),
+          data_(std::move(other.data_)) {
+        other.size_ = 0;
+    }
+
+    PackedCostVolume& operator=(PackedCostVolume&& other) noexcept {
+        if (this != &other) {
+            layout_ = std::move(other.layout_);
+            size_ = other.size_;
+            data_ = std::move(other.data_);
+            other.size_ = 0;
+        }
+        return *this;
+    }
+
     explicit PackedCostVolume(std::shared_ptr<const PackedVolumeLayout> layout, T fill = 0) {
         allocate(std::move(layout), fill);
     }
@@ -75,12 +116,25 @@ public:
         allocate(range, fill);
     }
 
-    void allocate(std::shared_ptr<const PackedVolumeLayout> layout, T fill = 0) {
+    void allocate_for_overwrite(std::shared_ptr<const PackedVolumeLayout> layout) {
+        const size_t new_size = layout ? layout->state_count() : 0;
+        std::unique_ptr<T[]> new_data;
+        if (new_size > 0) {
+            new_data.reset(new T[new_size]);
+        }
         layout_ = std::move(layout);
-        if (layout_) {
-            data_.assign(layout_->state_count(), fill);
-        } else {
-            data_.clear();
+        size_ = new_size;
+        data_ = std::move(new_data);
+    }
+
+    void allocate_for_overwrite(const SearchRange& range) {
+        allocate_for_overwrite(PackedVolumeLayout::from_range(range));
+    }
+
+    void allocate(std::shared_ptr<const PackedVolumeLayout> layout, T fill = 0) {
+        allocate_for_overwrite(std::move(layout));
+        if (size_ > 0) {
+            std::fill_n(data_.get(), size_, fill);
         }
     }
 
@@ -89,12 +143,14 @@ public:
     }
 
     void fill(T value) {
-        std::fill(data_.begin(), data_.end(), value);
+        if (size_ > 0) {
+            std::fill_n(data_.get(), size_, value);
+        }
     }
 
     void release() {
-        data_.clear();
-        data_.shrink_to_fit();
+        data_.reset();
+        size_ = 0;
         layout_.reset();
     }
 
@@ -102,8 +158,8 @@ public:
 
     int width() const { return layout_ ? layout_->width : 0; }
     int height() const { return layout_ ? layout_->height : 0; }
-    bool empty() const { return data_.empty(); }
-    size_t total_elements() const { return data_.size(); }
+    bool empty() const { return size_ == 0; }
+    size_t total_elements() const { return size_; }
 
     int dmin(int x, int y) const {
         return layout_ ? layout_->dmin[static_cast<size_t>(y) * layout_->width + x] : 0;
@@ -126,11 +182,11 @@ public:
     }
 
     T* slice(int x, int y) {
-        return data_.data() + layout_->offsets[static_cast<size_t>(y) * layout_->width + x];
+        return data_.get() + layout_->offsets[static_cast<size_t>(y) * layout_->width + x];
     }
 
     const T* slice(int x, int y) const {
-        return data_.data() + layout_->offsets[static_cast<size_t>(y) * layout_->width + x];
+        return data_.get() + layout_->offsets[static_cast<size_t>(y) * layout_->width + x];
     }
 
     T& at(int x, int y, int d) {
@@ -145,16 +201,17 @@ public:
         return data_[idx];
     }
 
-    T* data() { return data_.data(); }
-    const T* data() const { return data_.data(); }
+    T* data() { return data_.get(); }
+    const T* data() const { return data_.get(); }
 
-    size_t data_bytes() const { return data_.size() * sizeof(T); }
+    size_t data_bytes() const { return size_ * sizeof(T); }
     size_t layout_bytes() const { return layout_ ? layout_->bytes() : 0; }
     size_t bytes() const { return data_bytes() + layout_bytes(); }
 
 private:
     std::shared_ptr<const PackedVolumeLayout> layout_;
-    std::vector<T> data_;
+    size_t size_ = 0;
+    std::unique_ptr<T[]> data_;
 };
 
 using PackedCostVolume16 = PackedCostVolume<uint16_t>;
