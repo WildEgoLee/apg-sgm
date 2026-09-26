@@ -326,28 +326,56 @@ void SgmOptimizer::aggregate_path_packed(const PipelineConfig& cfg, const Image8
             }
         }
     } else {
-        std::vector<uint8_t> seen(static_cast<size_t>(w) * h, 0);
-        auto inb = [&](int x, int y) { return x >= 0 && x < w && y >= 0 && y < h; };
-        PathState prev, cur;
-        for (int y0 = 0; y0 < h; ++y0) {
-            for (int x0 = 0; x0 < w; ++x0) {
-                if (seen[y0 * w + x0]) continue;
-                int x = x0, y = y0;
-                while (inb(x - dx, y - dy)) {
-                    x -= dx;
-                    y -= dy;
+        const int nrays = w + h - 1;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+        for (int r = 0; r < nrays; ++r) {
+            PathState prev, cur;
+            int x = 0, y = 0;
+            if (dx == 1 && dy == 1) {
+                if (r < w) {
+                    x = r;
+                    y = 0;
+                } else {
+                    x = 0;
+                    y = r - w + 1;
                 }
-                bool hp = false;
-                int px = x, py = y;
-                while (inb(x, y)) {
-                    seen[y * w + x] = 1;
-                    process_pixel_packed(x, y, hp, px, py, P1, cfg.sgm, gray, base, acc, prev, cur);
-                    hp = true;
-                    px = x;
-                    py = y;
-                    x += dx;
-                    y += dy;
+            } else if (dx == 1 && dy == -1) {
+                if (r < w) {
+                    x = r;
+                    y = h - 1;
+                } else {
+                    x = 0;
+                    y = h - 1 - (r - w + 1);
                 }
+            } else if (dx == -1 && dy == 1) {
+                if (r < w) {
+                    x = r;
+                    y = 0;
+                } else {
+                    x = w - 1;
+                    y = r - w + 1;
+                }
+            } else { // dx == -1 && dy == -1
+                if (r < w) {
+                    x = r;
+                    y = h - 1;
+                } else {
+                    x = w - 1;
+                    y = h - 1 - (r - w + 1);
+                }
+            }
+
+            bool hp = false;
+            int px = x, py = y;
+            while (x >= 0 && x < w && y >= 0 && y < h) {
+                process_pixel_packed(x, y, hp, px, py, P1, cfg.sgm, gray, base, acc, prev, cur);
+                hp = true;
+                px = x;
+                py = y;
+                x += dx;
+                y += dy;
             }
         }
     }
