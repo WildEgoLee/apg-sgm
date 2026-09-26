@@ -173,3 +173,44 @@ A micro-profiling audit of Path8 directional timing and internal diagonal breakd
 | **Overall Pooled** | — | — | **4.2340x** (Gate: >= 2.0x) | — | — | **1.8591x** (Gate: >= 1.10x) | **PASS** |
 
 - **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed.
+
+---
+
+### P3.2a: Packed Cross 1D Tiled Prefix-Sum / Prefix-Count Optimization
+
+- **Status**: **MERGED as `99725c4` (PR #7)**
+- **Baseline**: `2ad6d26` (Post-P3.0 + 10-stage attribution)
+- **Scope**: Replaced repeated neighbor scanning $O(S \cdot \text{arm\_span})$ in `CostAggregator::aggregate_hv_packed()` with exact $O(S)$ 1D prefix-sum and prefix-count tile queries. Dense reference backend remained frozen; `tmp` volume allocation/ownership unchanged.
+- **Key Architectural Decisions**:
+  - Tiling with $B=16$ lanes.
+  - Per-row disparity envelope $[row\_lo, row\_hi)$ and per-column envelope $[col\_lo, col\_hi)$, eliminating scanning nonexistent disparity states.
+  - Interleaved 64-bit `PrefixEntry { uint32_t sum; uint32_t cnt; }` layout for optimal L1/L2 cache locality (16 lanes fit within 2 cache lines).
+  - Reusable per-worker workspace allocated once per `#pragma omp parallel` region.
+  - Safety boundary: $\max(\text{dim}) \times \text{cost}_{\max} \le 3000 \times 65535 \approx 1.96 \times 10^8 \ll \text{UINT32\_MAX}$, strictly preventing accumulator overflow.
+
+#### Verification & Parity
+- **CTest**: 4/4 PASS.
+- **Synthetic Checks**: Dual-backend bit-exact parity across 3 cases and 7 ablation modes (`dev.py check`).
+- **Full-Resolution F-res Parity (`--modes G --verify-backends`)**:
+  - `ArtL [G]`: PASS (100% bit-exact across all buffers)
+  - `Piano [G]`: PASS (100% bit-exact across all buffers)
+  - `Vintage [G]`: PASS (100% bit-exact across all buffers)
+- **Metrics Parity**: All 74 non-timing fields bit-exact across paired benchmark runs.
+
+#### Performance Results (16 Threads, G-mode, Middlebury 2014 Full-Res F)
+
+| Scene | Baseline Cross (ms) | P3.2a Cross (ms) | Cross Speedup | Baseline Pipeline (ms) | P3.2a Pipeline (ms) | Pipeline Speedup | Bit-Exact |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ArtL (F)** | 1496.42 ms | 417.22 ms | **3.587x** (H+V: 4.872x) | 4517.48 ms | 3554.32 ms | **1.271x** (27.1% faster) | 100% (74/74) |
+| **Piano (F)** | 5322.46 ms | 2201.67 ms | **2.418x** (H+V: 2.798x) | 16946.61 ms | 13300.78 ms | **1.274x** (27.4% faster) | 100% (74/74) |
+| **Vintage (F)** | 13526.26 ms | 6097.55 ms | **2.218x** (H+V: 2.509x) | 38344.20 ms | 29355.86 ms | **1.306x** (30.6% faster) | 100% (74/74) |
+| **Scene-Balanced Geomean** | — | — | **2.679x** (Gate: >= 1.50x) | — | — | **1.284x** (Gate: >= 1.10x) | **PASS** |
+| **Pooled Total Sum** | 22498.88 ms | 9022.00 ms | **2.494x** | 59808.29 ms | 46210.96 ms | **1.294x** | **PASS** |
+
+- **Hotspot Migration**:
+  - Cross execution share dropped from **35.51% down to 17.18%**.
+  - Pipeline rankings: SGM 33.63% (#1), Cost 23.82% (#2), Cross 17.18% (#3), Refine 11.10% (#4).
+  - Inside Cross, `tmp volume alloc` now represents ~18.5% to 29.3% of stage runtime.
+- **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36215335613).
+- **Next Step**: P3.2b `tmp` PackedCostVolume lifecycle reuse as a separate branch/experiment.
+
