@@ -350,8 +350,73 @@ Before implementing kernel optimizations, the Cost stage was profiled across thr
 - **Physical Time Reduction**: Across the three benchmark scenes, single-iteration pipeline execution time dropped by **-7.122 seconds per run** (from 45.026s down to 37.904s).
 - **Cost Hotspot Reduction**: The Cost stage share of full pipeline runtime collapsed from **~24.5% down to ~8.8%–10.8%**.
 - **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36223691804).
-- **Next Step**: Conduct post-P3.3 10-stage hotspot attribution on `main` to rank macro bottlenecks and determine the next optimization target (P3.4).
 
+---
 
+## V3 Priority 4: Refine Stage Optimization Track (P3.4)
 
+### P3.4a: Refine Stage Hierarchical Attribution
 
+Before introducing kernel modifications to `Refiner`, profiling on full-resolution Middlebury 2014 F (`ArtL`, `Piano`, `Vintage`, G-mode, 16T) established the structural properties of the stage:
+
+1. **Reliable Mask Invalidation & Workload Volume**:
+   - Reliable pixel skip ratio: 14.40% (ArtL), 14.90% (Piano), 7.79% (Vintage).
+   - **85.1% to 92.2% of pixels are marked unreliable** and participate in the full 3-iteration refinement pass.
+   - Total `local_cost()` invocations per full-res F run: **132.58 million calls** (ArtL: 17.51M, Piano: 57.39M, Vintage: 57.68M).
+2. **Computational Hotspot within `local_cost()`**:
+   - Each `local_cost()` call evaluated up to three transcendental `std::exp()` expressions (`ccensus`, `ad`, `grad`).
+   - Profile confirmed that floating-point `std::exp()` calculations accounted for **~60% of Refine stage runtime**.
+3. **Duplicate Candidate Analysis (P3.4c Opportunity)**:
+   - Of the ~4 candidates evaluated per pixel iteration, **32.13% are duplicate disparity values** (ArtL: 30.38%, Piano: 32.31%, Vintage: 32.48%) caused by neighbor clamping and random perturbation bounds.
+
+---
+
+### P3.4b: Refine Discrete Cost LUT
+
+- **Status**: **MERGED as `a215d2e` (PR #11)**
+- **Baseline**: `a3750d4` (Post-P3.3c documentation merge)
+- **Scope**:
+  1. Extracted shared discrete lookup tables into private internal header `src/discrete_cost_lut.hpp` within `namespace apg::detail`:
+     - `census[65]`: Hamming distance exponential penalty table (`[0, 64]`, reachable $\le 62$, 260 bytes).
+     - `ad[256]`: Absolute intensity difference exponential penalty table (`[0, 255]`, 1024 bytes).
+     - `grad[511]`: Gradient $L_1$ difference exponential penalty table (`[0, 510]`, 2044 bytes).
+     - Total footprint: 3,328 B (~3.25 KiB), resident in L1 D-Cache with zero heap allocation.
+  2. Replaced `std::exp()` in `Refiner::local_cost()` with direct table lookups.
+  3. Unified `CostComputer::compute_volume_packed()` to share `detail::DiscreteCostLut`.
+  4. Preserved exact `std::mt19937` random sequence, candidate order, and traversal without deduplication (isolated to P3.4c).
+  5. Dense reference backend remained completely frozen.
+
+#### Performance Results (16 Threads, G-mode, Middlebury 2014 Full-Res F)
+
+| Scene | P3.3c Base Refine (ms) | P3.4b Refine (ms) | Refine Speedup | P3.3c Base Pipeline (ms) | P3.4b Pipeline (ms) | Pipeline Speedup | Bit-Exact |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ArtL (F)** | 506.85 ms | 327.79 ms | **1.546x** (-179.1 ms) | 2923.16 ms | 2751.30 ms | **1.062x** (5.88% faster) | 100% (888/888) |
+| **Piano (F)** | 1693.05 ms | 1094.18 ms | **1.547x** (-598.9 ms) | 11198.66 ms | 10547.91 ms | **1.062x** (5.81% faster) | 100% (888/888) |
+| **Vintage (F)** | 1859.64 ms | 1175.54 ms | **1.582x** (-684.1 ms) | 23782.75 ms | 22672.12 ms | **1.049x** (4.67% faster) | 100% (888/888) |
+| **Scene-Balanced Geomean** | — | — | **1.5584x** (Gate: >= 1.50x) | — | — | **1.0577x** (Gate: >= 1.04x) | **PASS** |
+| **Pooled Total Sum** | 4059.54 ms | 2597.51 ms | **1.563x** (-1462.0 ms) | 37904.57 ms | 35971.33 ms | **1.054x** (-1933.2 ms) | **PASS** |
+
+#### Cumulative Multi-Track Pipeline Progress (P3.0 Baseline `2ad6d26` -> Post-P3.4b `a215d2e`)
+
+| Milestone | Pooled Pipeline Time (3 Scenes) | Delta vs Prior | Cumulative Speedup vs P3.0 |
+| :--- | :---: | :---: | :---: |
+| **P3.0 Initial Baseline** (`2ad6d26`) | 59.808 s | — | 1.000x |
+| **P3.2b Post-Cross** (`79ed6ac`) | 45.027 s | -14.781 s | 1.316x |
+| **P3.3c Post-Cost** (`ad4ee3f`) | 37.905 s | -7.122 s | 1.557x |
+| **P3.4b Post-Refine LUT** (`a215d2e`) | **35.971 s** | **-1.933 s** | **1.647x** |
+
+**Net execution time saved**: **-23.837 seconds per full-res F run** (39.9% end-to-end reduction).
+
+#### Current Post-P3.4 Pipeline Stage Distribution (35.97 s Pooled)
+
+1. **SGM**: ~16.13 s (**44.84%**) — Dominant #1 macro bottleneck
+2. **Cross**: ~7.83 s (**21.78%**) — #2 macro bottleneck
+3. **Cost**: ~3.62 s (**10.06%**) — Stabilized
+4. **Refine**: ~2.60 s (**7.22%**) — Reduced from 13.43% down to 7.22%
+5. **Prior**: ~2.36 s (**6.56%**)
+6. **Other (Aux, WTA, Conf, Post)**: ~3.43 s (**9.54%**)
+
+- **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36225322417).
+- **Next Steps Decision**:
+  - **Option A (P3.4c)**: Refine candidate deduplication (evaluate skipping ~32% redundant `local_cost()` calls while strictly preserving `std::mt19937` call positions). Potential gain: ~0.8s pooled (~2.2% pipeline).
+  - **Option B (P3.5)**: Packed SGM AVX2 SIMD / 8-path recurrence vectorization. Targets the dominant 44.84% macro bottleneck.
