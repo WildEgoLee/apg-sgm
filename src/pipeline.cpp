@@ -194,7 +194,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         out.packed_cost32.release();
 
         auto layout = PackedVolumeLayout::from_range(out.range);
-        out.packed_cost.allocate(layout, kInvalidCost);
+        out.packed_cost.allocate_for_overwrite(layout);
 
         cost.compute_volume_packed(cfg_, out, out.packed_cost);
         const auto t3 = time_now();

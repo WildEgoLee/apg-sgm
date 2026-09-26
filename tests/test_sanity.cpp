@@ -122,7 +122,7 @@ int main() {
     }
     buf_packed.range.dmin.at(0, 0) -= 7; // restore
 
-    // Copy / Move layout preservation checks
+    // Copy / Move layout preservation and lifecycle checks
     PackedCostVolume16 copy_vol = packed_cost;
     if (copy_vol.layout() != shared_layout) {
         std::cerr << "Error: copy_vol does not share layout!\n";
@@ -131,6 +131,25 @@ int main() {
     PackedCostVolume16 moved_vol = std::move(copy_vol);
     if (moved_vol.layout() != shared_layout) {
         std::cerr << "Error: moved_vol does not share layout!\n";
+        return 1;
+    }
+    if (!copy_vol.empty() || copy_vol.total_elements() != 0 || copy_vol.data() != nullptr || copy_vol.layout() != nullptr) {
+        std::cerr << "Error: moved-from copy_vol not in consistent empty state!\n";
+        return 1;
+    }
+    PackedCostVolume16 copy_from_moved(copy_vol);
+    if (!copy_from_moved.empty() || copy_from_moved.total_elements() != 0 || copy_from_moved.data() != nullptr) {
+        std::cerr << "Error: copy_from_moved not empty!\n";
+        return 1;
+    }
+    PackedCostVolume16 move_assigned;
+    move_assigned = std::move(moved_vol);
+    if (!moved_vol.empty() || moved_vol.total_elements() != 0 || moved_vol.data() != nullptr || moved_vol.layout() != nullptr) {
+        std::cerr << "Error: moved-from moved_vol not in consistent empty state after move-assignment!\n";
+        return 1;
+    }
+    if (move_assigned.layout() != shared_layout || move_assigned.empty() || move_assigned.total_elements() == 0 || move_assigned.data() == nullptr) {
+        std::cerr << "Error: move_assigned invalid state!\n";
         return 1;
     }
 
