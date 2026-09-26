@@ -312,7 +312,46 @@ Before implementing kernel optimizations, the Cost stage was profiled across thr
 | **Pooled Total Sum** | 11573.27 ms | 9466.47 ms | **1.223x** (-2106.8 ms) | 45026.61 ms | 43122.62 ms | **1.044x** (-1904.0 ms) | **PASS** |
 
 - **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36222599843).
-- **Next Step**: Proceed to **P3.3c: Discrete Cost Table LUT** (`census[32] / ad[256] / grad[511]`).
+
+---
+
+### P3.3c: Discrete Cost Table LUT (`census[65] / ad[256] / grad[511]`)
+
+- **Status**: **MERGED as `ad4ee3f` (PR #10)**
+- **Baseline**: `4d11eda` (Post-P3.3b merge)
+- **Scope**:
+  1. Constructed three small read-only 1D lookup tables in `CostComputer::compute_volume_packed()` preceding the OpenMP parallel disparity loop:
+     - `lut_census[65]`: Precomputes $1 - \exp(-i / \lambda_c)$ for Census Hamming distance (capacity 65; reachable range $\le 62$, specifically $\le 31$ for `SymmetricCensus9x7` and $\le 62$ for standard `Census9x7`; 260 bytes).
+     - `lut_ad[256]`: Precomputes $\eta \cdot (1 - \exp(-i / \lambda_a))$ for absolute pixel intensity differences $[0, 255]$ (1024 bytes).
+     - `lut_grad[511]`: Precomputes $\mu \cdot (1 - \exp(-i / \lambda_g))$ for Sobel gradient absolute differences sum $[0, 510]$ (2044 bytes).
+  2. Replaced the scalar `std::exp()` runtime calculations in the inner compute loop with direct table lookups.
+  3. Total memory footprint is 3328 B (~3.25 KiB), which fits comfortably within L1 D-Cache across all CPU cores with zero heap allocation or synchronization overhead.
+  4. Dense reference implementation (`compute_volume()`) remains completely frozen as the bit-exact golden standard.
+
+#### Isolated Performance Results (16 Threads, G-mode, Middlebury 2014 Full-Res F)
+
+| Scene | P3.3b Baseline Cost | P3.3c Cost | Cost Speedup | P3.3b Baseline Pipeline | P3.3c Pipeline | Pipeline Speedup | Bit-Exact |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ArtL (F)** | 652.99 ms | 258.36 ms | **2.527x** (-394.6 ms) | 3308.61 ms | 2923.16 ms | **1.132x** (11.7% faster) | 100% (888/888) |
+| **Piano (F)** | 2469.19 ms | 979.72 ms | **2.520x** (-1489.5 ms) | 12669.00 ms | 11198.66 ms | **1.131x** (11.6% faster) | 100% (888/888) |
+| **Vintage (F)** | 6344.29 ms | 2579.80 ms | **2.459x** (-3764.5 ms) | 27145.01 ms | 23782.75 ms | **1.141x** (12.4% faster) | 100% (888/888) |
+| **Scene-Balanced Geomean** | — | — | **2.5021x** | — | — | **1.1348x** | **PASS** |
+| **Pooled Total Sum** | 9466.47 ms | 3817.88 ms | **2.480x** (-5648.6 ms) | 43122.62 ms | 37904.57 ms | **1.138x** (-5218.1 ms) | **PASS** |
+
+#### Cumulative Cost Track Gains (P3.3 Track: P3.3b + P3.3c vs Pre-P3.3 Baseline `fb1d58c`)
+
+| Scene | Pre-P3.3 Cost | Post-P3.3c Cost | Cost Speedup | Pre-P3.3 Pipeline | Post-P3.3c Pipeline | Pipeline Speedup |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ArtL (F)** | 807.03 ms | 258.36 ms | **3.124x** (-548.7 ms) | 3474.89 ms | 2923.16 ms | **1.189x** |
+| **Piano (F)** | 2971.26 ms | 979.72 ms | **3.033x** (-1991.5 ms) | 12990.29 ms | 11198.66 ms | **1.160x** |
+| **Vintage (F)** | 7794.98 ms | 2579.80 ms | **3.022x** (-5215.2 ms) | 28561.43 ms | 23782.75 ms | **1.201x** |
+| **Scene-Balanced Geomean** | — | — | **3.0590x** | — | — | **1.1831x** |
+
+- **Physical Time Reduction**: Across the three benchmark scenes, single-iteration pipeline execution time dropped by **-7.122 seconds per run** (from 45.026s down to 37.904s).
+- **Cost Hotspot Reduction**: The Cost stage share of full pipeline runtime collapsed from **~24.5% down to ~8.8%–10.8%**.
+- **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36223691804).
+- **Next Step**: Conduct post-P3.3 10-stage hotspot attribution on `main` to rank macro bottlenecks and determine the next optimization target (P3.4).
+
 
 
 
