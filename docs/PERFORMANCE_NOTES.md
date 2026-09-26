@@ -261,6 +261,58 @@ A micro-profiling audit of Path8 directional timing and internal diagonal breakd
   3. **Cross**: ~14.69%
   4. **Refine**: ~11.41%
 - **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36216464038).
-- **Next Step**: Conclude Cross Track; transition to **P3.3 Cost-Volume Optimization** (audit discrete exp/LUT bit-exact feasibility).
+- **Next Step**: Conclude Cross Track; transition to **P3.3 Cost-Volume Optimization**.
+
+---
+
+## V3 Priority 3: Cost-Volume Optimization Track (P3.3)
+
+### P3.3a: Cost Stage Hierarchical Attribution
+
+Before implementing kernel optimizations, the Cost stage was profiled across three hierarchical levels:
+
+1. **Level 1 (Allocation/Init vs Compute Kernel)**:
+   - Evaluated the two serial full-volume `kInvalidCost` fills:
+     1. `pipeline.cpp`: `out.packed_cost.allocate(layout, kInvalidCost)`
+     2. `cost_computer.cpp`: `packed_cost.fill(kInvalidCost)`
+   - Profiling confirmed these redundant full-volume fills account for **20.1%–20.3% of total Cost stage runtime** (ArtL: 151 ms / 750 ms, Piano: 562 ms / 2772 ms, Vintage: 1503 ms / 7380 ms).
+2. **Level 2 (Cost Kernel Inner-Loop Arithmetic Breakdown)**:
+   - Census popcount: ~12% of kernel runtime.
+   - 3x `std::exp()` computations: **~61% of kernel runtime**.
+   - Arithmetic mixing & clamping: ~27% of kernel runtime.
+   - Micro-benchmark of discrete LUT vs scalar `std::exp()` achieved **2.57x kernel speedup**.
+3. **Level 3 (Full-Resolution Middlebury F Bit-Exact Parity Audit)**:
+   - Audited all discrete domain values across ArtL, Piano, and Vintage F (totaling **4,342,883,572 evaluated packed disparity states**).
+   - Zero differences observed between scalar floating-point `std::exp()` and 1D lookup tables (`census[32]`, `ad[256]`, `grad[511]`), confirming 100% bit-exact equivalence.
+
+---
+
+### P3.3b: Avoid Redundant Packed Cost Volume Initialization
+
+- **Status**: **MERGED as `4d11eda` (PR #9)**
+- **Baseline**: `fb1d58c` (Post-P3.2b documentation merge)
+- **Scope**:
+  1. Refactored `PackedCostVolume<T>` to use `std::unique_ptr<T[]>` and `size_t`, bypassing C++17 `std::vector::resize()` element value-initialization loops.
+  2. Implemented `allocate_for_overwrite(layout)` and `allocate_for_overwrite(range)` providing pure capacity acquisition in ~0.01 ms.
+  3. Implemented explicit copy/move constructors and copy/move assignment operators with moved-from size zeroing (`other.size_ = 0`) and strong exception safety.
+  4. Eliminated the two redundant full-volume invalid cost fills in `pipeline.cpp` and `cost_computer.cpp`.
+  5. Added comprehensive move/copy lifecycle and moved-from object state consistency unit tests in `test_sanity.cpp`.
+- **Key Invariants & Safety Guarantees**:
+  - Memory Peak: Preserved strict $\le 3 \times C16$ peak volume memory constraint; zero cross-frame retained volumes.
+  - Complete Initialization Invariant: The OpenMP parallel disparity loop in `compute_volume_packed()` unconditionally assigns all states $di \in [0, D_p)$ (either `kInvalidCost` for out-of-bounds or valid cost), guaranteeing no uninitialized state reads.
+
+#### Performance Results (16 Threads, G-mode, Middlebury 2014 Full-Res F)
+
+| Scene | Baseline Cost | P3.3b Cost | Cost Speedup | Baseline Pipeline | P3.3b Pipeline | Pipeline Speedup | Bit-Exact |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ArtL (F)** | 807.03 ms | 652.99 ms | **1.236x** (-154.0 ms) | 3474.89 ms | 3308.61 ms | **1.050x** (5.03% faster) | 100% (888/888) |
+| **Piano (F)** | 2971.26 ms | 2469.19 ms | **1.203x** (-502.1 ms) | 12990.29 ms | 12669.00 ms | **1.025x** (2.54% faster) | 100% (888/888) |
+| **Vintage (F)** | 7794.98 ms | 6344.29 ms | **1.229x** (-1450.7 ms) | 28561.43 ms | 27145.01 ms | **1.052x** (5.22% faster) | 100% (888/888) |
+| **Scene-Balanced Geomean** | — | — | **1.2226x** (Gate: >= 1.15x) | — | — | **1.0425x** (Gate: >= 1.03x) | **PASS** |
+| **Pooled Total Sum** | 11573.27 ms | 9466.47 ms | **1.223x** (-2106.8 ms) | 45026.61 ms | 43122.62 ms | **1.044x** (-1904.0 ms) | **PASS** |
+
+- **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36222599843).
+- **Next Step**: Proceed to **P3.3c: Discrete Cost Table LUT** (`census[32] / ad[256] / grad[511]`).
+
 
 
