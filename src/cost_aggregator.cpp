@@ -147,6 +147,38 @@ void CostAggregator::aggregate(const PipelineConfig& cfg, PipelineBuffers& buf) 
 
 namespace {
 
+// Uninitialized for-overwrite workspace for Cross aggregation tmp buffer.
+// Eliminates redundant zero/fill initialization overhead across hundreds of MiB / GiB of memory.
+//
+// Key Invariants:
+// 1. tmp lifetime remains strictly confined to CostAggregator::aggregate_packed().
+// 2. No persistent full-volume workspace is retained across frames or phases, preserving the <= 3*C16 peak model.
+// 3. The horizontal prefix pass unconditionally overwrites every valid packed disparity state in tmp
+//    before any vertical pass read, guaranteeing memory correctness with uninitialized storage.
+struct PackedCrossTmp {
+    std::shared_ptr<const PackedVolumeLayout> layout_;
+    std::unique_ptr<uint16_t[]> data_;
+
+    explicit PackedCrossTmp(std::shared_ptr<const PackedVolumeLayout> l)
+        : layout_(std::move(l)),
+          data_(layout_ && layout_->state_count() > 0 ? new uint16_t[layout_->state_count()] : nullptr) {}
+
+    int width() const { return layout_ ? layout_->width : 0; }
+    int height() const { return layout_ ? layout_->height : 0; }
+    int dmin(int x, int y) const {
+        return layout_ ? layout_->dmin[static_cast<size_t>(y) * layout_->width + x] : 0;
+    }
+    int dmax(int x, int y) const {
+        return layout_ ? layout_->dmax(static_cast<size_t>(y) * layout_->width + x) : 0;
+    }
+    uint16_t* slice(int x, int y) {
+        return data_.get() + layout_->offsets[static_cast<size_t>(y) * layout_->width + x];
+    }
+    const uint16_t* slice(int x, int y) const {
+        return data_.get() + layout_->offsets[static_cast<size_t>(y) * layout_->width + x];
+    }
+};
+
 // Prefix entry for a single disparity lane.
 // Note: Prefix accumulation runs along the entire row/column dimension.
 // Capacity boundary: max_dim * cost_max <= max_dim * 65535.
@@ -167,12 +199,11 @@ struct PrefixWorkspace {
     }
 };
 
-} // namespace
-
-void CostAggregator::aggregate_hv_packed(PackedCostVolume16& packed_cost,
-                                         PackedCostVolume16& tmp,
-                                         const std::vector<int16_t>& Larm, const std::vector<int16_t>& Rarm,
-                                         const std::vector<int16_t>& Uarm, const std::vector<int16_t>& Darm) const {
+template <typename TmpVolume>
+void aggregate_hv_packed_impl(PackedCostVolume16& packed_cost,
+                             TmpVolume& tmp,
+                             const std::vector<int16_t>& Larm, const std::vector<int16_t>& Rarm,
+                             const std::vector<int16_t>& Uarm, const std::vector<int16_t>& Darm) {
     const int w = packed_cost.width();
     const int h = packed_cost.height();
     constexpr int B = 16;
@@ -366,6 +397,15 @@ void CostAggregator::aggregate_hv_packed(PackedCostVolume16& packed_cost,
     }
 }
 
+} // namespace
+
+void CostAggregator::aggregate_hv_packed(PackedCostVolume16& packed_cost,
+                                         PackedCostVolume16& tmp,
+                                         const std::vector<int16_t>& Larm, const std::vector<int16_t>& Rarm,
+                                         const std::vector<int16_t>& Uarm, const std::vector<int16_t>& Darm) const {
+    aggregate_hv_packed_impl(packed_cost, tmp, Larm, Rarm, Uarm, Darm);
+}
+
 void CostAggregator::aggregate_packed(const PipelineConfig& cfg,
                                       const Image8& left_gray,
                                       PackedCostVolume16& packed_cost) const {
@@ -374,9 +414,9 @@ void CostAggregator::aggregate_packed(const PipelineConfig& cfg,
     build_cross_arms(left_gray, cfg.aggregation, L, R, U, D);
     const int iters = std::max(1, cfg.aggregation.iterations);
 
-    PackedCostVolume16 tmp(packed_cost.layout(), kInvalidCost);
+    PackedCrossTmp tmp(packed_cost.layout());
     for (int i = 0; i < iters; ++i) {
-        aggregate_hv_packed(packed_cost, tmp, L, R, U, D);
+        aggregate_hv_packed_impl(packed_cost, tmp, L, R, U, D);
     }
 }
 
