@@ -71,11 +71,13 @@ The geometric mean across all six scene/mode pipeline cells was `1.0130x`. The u
 
 ## V3 Priority 2.2: Packed `PathState` ownership swap
 
-**Status:** implemented on `codex/p2-2-packed-state-swap`; local correctness and three-scene quick performance gates pass. Not merged.
+**Status:** MERGED as `6c2370b` (PR #5). Local correctness, trainingQ quick gates, and full-resolution Middlebury F confirmatory gates passed.
 
 Only `process_pixel_packed()` changed. Its three state-completion paths now swap `prev` and `cur`: the empty-state (`D_c <= 0`) path, the first-pixel/empty-previous path, and the normal recurrence path. Dense `process_pixel()` remains unchanged. Every call resets `dmin`, `dmax`, and `min_val`; for `D_c > 0`, both initialization and recurrence loops overwrite every `cur.vals[0..D_c)` entry, including invalid costs. For `D_c <= 0`, `resize(0)` and the metadata reset produce the complete empty state. The swap therefore retains the two vector capacities without carrying logical recurrence values forward.
 
 Correctness checks on the MSVC Release build passed CTest 4/4. Dense/Packed backend verification passed 6/6 bit-exact cases for E and G across ArtL, Piano, and Vintage. The isolated Packed SGM accumulator hash also matched baseline on every scene/mode cell.
+
+### Preliminary trainingQ Quick Gate
 
 The available local data was the Middlebury Eval3 `trainingQ` ArtL/Piano/Vintage subset from the MiddleEval archives. Inputs were converted to grayscale PGM under ignored `build` outputs. Results below use Q-resolution inputs with `dmax` 32/40/96; they are a quick gate, not a full-resolution F-data benchmark. All measurements used 16 threads and MSVC Release with OpenMP 2.0.
 
@@ -104,3 +106,19 @@ The paired pipeline check used packed E/G, one warmup and three timed repeats pe
 | **Geometric mean** | **Path4 1.247x; Path8 1.023x** | **Path4 1.037x; Path8 1.008x; all six cells 1.022x** |
 
 All 74 non-timing CSV fields matched in 48 paired pipeline comparisons. An earlier one-sample Vintage/G pass showed a large slowdown across SGM and several unchanged earlier stages. It did not reproduce: a focused eight-pair repeat-3 check measured 0.999x SGM and 0.998x pipeline geometric mean (pipeline median paired ratio 1.011x), and the balanced full matrix above showed no repeatable regression.
+
+### Full-Resolution F Gate & Confirmation
+
+Full-resolution Middlebury F-resolution evaluation confirmed substantial isolated optimizer and pipeline gains on Path4, while Path8 exhibited a smaller isolated gain:
+
+- **Isolated Optimizer Speedup (F-resolution):**
+  - Path4 (E-mode): **1.131x**
+  - Path8 (G-mode): **1.040x**
+- **Pipeline Speedup (F-resolution):**
+  - Path4 (E-mode): **1.030x**
+  - Path8 (G-mode):
+    - Initial 3-scene sample: `0.9825x` (impacted by a severe single-run outlier at `0.508x` during concurrent system noise)
+    - Confirmatory 30-pair gate: **1.0106x**
+    - Pooled sample (all pairs combined, preserving the `0.508x` outlier): **0.9999716x**
+
+Under the pre-established `>= 0.995x` regression gate, the pooled Path8 pipeline ratio confirms no regression even with the worst-case outlier preserved, while Path4 delivers clear end-to-end performance improvement. PR #5 was merged into `main` as `6c2370b`.
