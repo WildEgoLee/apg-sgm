@@ -1,5 +1,6 @@
 #include "apg_sgm/refiner.hpp"
 #include "apg_sgm/cost_computer.hpp"
+#include "discrete_cost_lut.hpp"
 
 #include <cmath>
 #include <random>
@@ -8,32 +9,26 @@ namespace apg {
 
 namespace {
 
-float local_cost(const PipelineConfig& cfg, const PipelineBuffers& buf, int x, int y, int d) {
+float local_cost(const PipelineConfig& cfg, const PipelineBuffers& buf, const detail::DiscreteCostLut& lut, int x, int y, int d) {
     const int w = buf.left_gray.width();
     const int xr = x - d;
     const int lo = buf.range.dmin.at(x, y);
     const int hi = buf.range.dmax.at(x, y);
     if (xr < 0 || xr >= w || d < lo || d >= hi) return 1e6f;
     const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
-    float ccensus = 0.f;
-    if (sym) {
-        ccensus = static_cast<float>(
-            CostComputer::popcount32(buf.census_left[y * w + x] ^ buf.census_right[y * w + xr]));
-    } else {
-        ccensus = static_cast<float>(
-            CostComputer::popcount64(buf.census_left64[y * w + x] ^ buf.census_right64[y * w + xr]));
-    }
-    float c = 1.f - std::exp(-ccensus / std::max(cfg.cost.lambda_census, 1e-3f));
+    const int pop = sym ? CostComputer::popcount32(buf.census_left[y * w + x] ^ buf.census_right[y * w + xr])
+                        : CostComputer::popcount64(buf.census_left64[y * w + x] ^ buf.census_right64[y * w + xr]);
+    float c = lut.census[pop];
     if (cfg.cost.use_ad) {
         const int ad = std::abs(static_cast<int>(buf.left_gray.at(x, y)) -
                                 static_cast<int>(buf.right_gray.at(xr, y)));
-        c += cfg.cost.eta_ad * (1.f - std::exp(-static_cast<float>(ad) / std::max(cfg.cost.lambda_ad, 1e-3f)));
+        c += lut.ad[ad];
     }
     if (cfg.cost.use_grad) {
         const int g =
             std::abs(static_cast<int>(buf.left_gx.at(x, y)) - static_cast<int>(buf.right_gx.at(xr, y))) +
             std::abs(static_cast<int>(buf.left_gy.at(x, y)) - static_cast<int>(buf.right_gy.at(xr, y)));
-        c += cfg.cost.mu_grad * (1.f - std::exp(-static_cast<float>(g) / std::max(cfg.cost.lambda_grad, 1e-3f)));
+        c += lut.grad[g];
     }
     return c;
 }
@@ -45,6 +40,8 @@ void Refiner::refine(const PipelineConfig& cfg, PipelineBuffers& buf) const {
     const int w = buf.disparity.width();
     const int h = buf.disparity.height();
     std::mt19937 rng(12345);
+
+    const detail::DiscreteCostLut lut(cfg);
 
     Image32f work = buf.disparity;
     for (int it = 0; it < cfg.refine.iterations; ++it) {
@@ -85,7 +82,7 @@ void Refiner::refine(const PipelineConfig& cfg, PipelineBuffers& buf) const {
                 float best_c = 1e9f;
                 int best_d = (cur >= 0.f) ? clampi(static_cast<int>(std::round(cur)), lo, hi - 1) : lo;
                 for (int i = 0; i < n; ++i) {
-                    const float c = local_cost(cfg, buf, x, y, candidates[i]);
+                    const float c = local_cost(cfg, buf, lut, x, y, candidates[i]);
                     if (c < best_c) {
                         best_c = c;
                         best_d = candidates[i];

@@ -1,4 +1,5 @@
 #include "apg_sgm/cost_computer.hpp"
+#include "discrete_cost_lut.hpp"
 
 #include <cmath>
 #include <cstring>
@@ -196,32 +197,12 @@ void CostComputer::compute_volume_packed(const PipelineConfig& cfg,
     const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
     const bool use_ad = cfg.cost.use_ad;
     const bool use_grad = cfg.cost.use_grad;
-    const float lc = std::max(cfg.cost.lambda_census, 1e-3f);
-    const float la = std::max(cfg.cost.lambda_ad, 1e-3f);
-    const float lg = std::max(cfg.cost.lambda_grad, 1e-3f);
     const float eta = cfg.cost.eta_ad;
     const float mu = cfg.cost.mu_grad;
     const float norm = 1.f + (use_ad ? eta : 0.f) + (use_grad ? mu : 0.f);
     const float scale = static_cast<float>(cfg.cost.cost_max) / std::max(norm, 1e-6f);
 
-    float lut_census[65];
-    for (int i = 0; i <= 64; ++i) {
-        lut_census[i] = 1.f - std::exp(-static_cast<float>(i) / lc);
-    }
-
-    float lut_ad[256];
-    if (use_ad) {
-        for (int i = 0; i < 256; ++i) {
-            lut_ad[i] = eta * (1.f - std::exp(-static_cast<float>(i) / la));
-        }
-    }
-
-    float lut_grad[511];
-    if (use_grad) {
-        for (int i = 0; i < 511; ++i) {
-            lut_grad[i] = mu * (1.f - std::exp(-static_cast<float>(i) / lg));
-        }
-    }
+    const detail::DiscreteCostLut lut(cfg);
 
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(dynamic, 4)
@@ -243,11 +224,11 @@ void CostComputer::compute_volume_packed(const PipelineConfig& cfg,
                 }
                 const int pop = sym ? popcount32(buf.census_left[y * w + x] ^ buf.census_right[y * w + xr])
                                     : popcount64(buf.census_left64[y * w + x] ^ buf.census_right64[y * w + xr]);
-                float c = lut_census[pop];
+                float c = lut.census[pop];
                 if (use_ad) {
                     const int ad = std::abs(static_cast<int>(buf.left_gray.at(x, y)) -
                                             static_cast<int>(buf.right_gray.at(xr, y)));
-                    c += lut_ad[ad];
+                    c += lut.ad[ad];
                 }
                 if (use_grad) {
                     const int g =
@@ -255,7 +236,7 @@ void CostComputer::compute_volume_packed(const PipelineConfig& cfg,
                                  static_cast<int>(buf.right_gx.at(xr, y))) +
                         std::abs(static_cast<int>(buf.left_gy.at(x, y)) -
                                  static_cast<int>(buf.right_gy.at(xr, y)));
-                    c += lut_grad[g];
+                    c += lut.grad[g];
                 }
                 const int q = static_cast<int>(c * scale + 0.5f);
                 slice[di] = static_cast<uint16_t>(clampi(q, 0, cfg.cost.cost_max));
