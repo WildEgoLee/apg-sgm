@@ -338,7 +338,7 @@ int main(int argc, char** argv) {
         << "mean_search_width,mean_geom_width,geom_reduction_ratio,prior_incremental_reduction,total_reduction_ratio,"
         << "cost_bytes,cost32_bytes,peak_bytes,"
         << "reliable_ratio,unreliable_ratio,refine_changed_ratio,refine_epe_delta,post_epe_delta,total_epe_delta,"
-        << "time_total_ms,time_cost_ms,time_right_wta_ms,time_cross_ms,time_sgm_ms,time_prior_ms,time_refine_ms,time_post_ms\n";
+        << "time_total_ms,time_aux_ms,time_prior_ms,time_cost_ms,time_right_wta_ms,time_cross_ms,time_sgm_ms,time_wta_ms,time_confidence_ms,time_refine_ms,time_post_ms\n";
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
@@ -552,11 +552,14 @@ int main(int argc, char** argv) {
                 << (m.has_refine_stats ? m.total_epe_delta : 0.f) << ","
                 << std::setprecision(2)
                 << best_sample.total_ms << ","
+                << best_sample.stats.timing.aux_ms << ","
+                << best_sample.stats.timing.prior_ms << ","
                 << best_sample.stats.timing.cost_ms << ","
                 << best_sample.stats.timing.right_wta_ms << ","
                 << best_sample.stats.timing.cross_ms << ","
                 << best_sample.stats.timing.sgm_ms << ","
-                << best_sample.stats.timing.prior_ms << ","
+                << best_sample.stats.timing.wta_ms << ","
+                << best_sample.stats.timing.confidence_ms << ","
                 << best_sample.stats.timing.refine_ms << ","
                 << best_sample.stats.timing.post_ms << "\n";
             csv.flush();
