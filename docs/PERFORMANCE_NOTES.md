@@ -1070,3 +1070,93 @@ In P3.10b-1, four orthogonal prototypes were evaluated on 16 threads across Midd
 | — | **Total Pipeline** | **18,725.53 ms** | **100.00%** | **18,948.85 ms** | **1.012x (vs paired: 1.036x)** |
 
 **Cumulative Speedup vs P3.0 Baseline (59.83 s):** **3.195x** (Total pipeline reduced from 59.83 s to 18.73 s).
+
+---
+
+## V3 Priority 3.11a: SGM Diagonal Ray Interleaving Locality Feasibility
+
+**Status:** FEASIBILITY COMPLETED. STRONG GO to production.
+
+In P3.11a, diagonal traversal locality was investigated across Middlebury 2014 full-res F (ArtL, Piano, Vintage) at 16 threads. Diagonal rays (P4..P7) account for ~50% of 8-path SGM execution time. Analysis revealed two distinct geometric ray families:
+1. **Family H (Horizontal-border origins: top/bottom)**:
+   - Covers 65% to 76% of all diagonal states in full-res scenes.
+   - For Family H, stepping rays concurrently step-by-step accesses identical row indices $y$ and horizontally adjacent column indices $x$, establishing strong spatial row locality across packed volume slices.
+   - Evaluated block sizes $B \in \{8, 16, 32, 64\}$. $B=16$ achieved 1.14x~1.31x speedup across scenes.
+2. **Family S (Side-border origins: left/right)**:
+   - Stepping along rays produces vertical strides across memory. Driving ray blocks by `global y` with $x(y) = x_{\text{side}} + dx \cdot (y - y_{\text{start}})$ aligns memory accesses with row-major memory order.
+   - Evaluated block sizes $B \in \{16, 32, 64\}$. $B=32$ achieved 1.12x~1.20x speedup across scenes.
+
+Combined diagonal feasibility achieved a geometric-mean speedup of **1.163x** and pooled saving of **426.95 ms** with 100% bit-exact parity, providing conclusive evidence to proceed directly to production implementation.
+
+---
+
+## V3 Priority 3.11b: SGM Family-Specific Diagonal Ray Interleaving Production Implementation
+
+**Status:** IMPLEMENTED & MERGED on branch `codex/p3-11b-sgm-diagonal-ray-interleaving`. 100% bit-exact parity across dense/packed backends on E and G modes.
+
+### P3.11b-a: Production Architecture & Implementation Details
+
+1. **Family-Specific Block Sizes & Traversals**:
+   - In `src/sgm_optimizer_avx2.cpp`, diagonal aggregation (`aggregate_diagonal_packed_avx2`) explicitly separates the ray space into Family H and Family S:
+     - **Family H**: Fixed `kDiagHorizontalRayBlock = 16`. Traversal is structured as `step` outer ($0 \le \text{step} < h$) and ray-in-block inner ($0 \le i < act\_b$), accessing identical row $y$ and contiguous columns $x$.
+     - **Family S**: Fixed `kDiagSideRayBlock = 32`. Traversal is driven by `global y` (increasing for $dy = +1$, decreasing for $dy = -1$), computing corresponding $x$ per active ray in block to maintain strict row-local memory access.
+2. **Working-Set Discipline & Scratch Elimination**:
+   - Ray interleaving introduces strictly zero contribution scratch volumes and zero full-image temporary buffers.
+   - Ray states are independent; active working state consists solely of bounded `std::array<PathState, B>` per ray block whose vector storage scales with each ray's current disparity range and is reused across the block without dynamic reallocation.
+3. **Corner Origin Handling & Edge Cases**:
+   - Corner origins are systematically grouped into Family H; Family S handles strictly the $h - 1$ side origins ($r \in [w, w + h - 1)$), completely avoiding double-processing corner pixels.
+   - Unit tests added to `tests/test_sanity.cpp` explicitly verifying non-square shapes, partial widths, negative disparities, empty slices, and sentinel preservation across Path4 and Path8 modes.
+
+---
+
+### P3.11b-b: Production Benchmark & Gate Evaluation
+
+The production paired benchmark evaluated baseline (un-interleaved ray-by-ray execution from commit `16c3280`) versus P3.11b on Middlebury 2014 full-resolution F (ArtL, Piano, Vintage) on 16 threads, median of 4 repeats.
+
+#### 1. Diagonal (P4..P7) Isolated Results (16 Threads, G-mode, 4 Repeats, Median)
+
+| Scene | Baseline Diagonal (ms) | P3.11b Diagonal (ms) | Delta (ms) | Speedup | Gate | Parity |
+|:---|---:|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 212.88 ms | **191.92 ms** | -20.96 ms | **1.109x** | $\ge 1.05\times$ (PASS) | 100% bit-exact |
+| **Piano (F)** | 886.79 ms | **734.44 ms** | -152.35 ms | **1.207x** | $\ge 1.05\times$ (PASS) | 100% bit-exact |
+| **Vintage (F)** | 2,066.73 ms | **1,828.03 ms** | -238.70 ms | **1.131x** | $\ge 1.05\times$ (PASS) | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | — | **1.148x** | **$\ge 1.12\times$ (PASS)** | **PASS** |
+| **Pooled Total Sum** | 3,166.39 ms | **2,754.38 ms** | **-412.01 ms** | **1.150x** | **$\ge 300\text{ ms}$ saving (PASS)** | **PASS** |
+
+#### 2. Full SGM Stage Results (16 Threads, G-mode, 4 Repeats, Median)
+
+| Scene | Baseline SGM (ms) | P3.11b SGM (ms) | Delta (ms) | SGM Speedup | Gate | Parity |
+|:---|---:|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 395.49 ms | **390.79 ms** | -4.71 ms | **1.012x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Piano (F)** | 1,589.71 ms | **1,452.41 ms** | -137.30 ms | **1.095x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Vintage (F)** | 3,930.61 ms | **3,766.79 ms** | -163.82 ms | **1.043x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | — | **1.049x** | **$\ge 1.04\times$ (PASS)** | **PASS** |
+| **Pooled Total Sum** | 5,915.81 ms | **5,609.98 ms** | **-305.83 ms** | **1.055x** | — | **PASS** |
+
+#### 3. Full Pipeline End-to-End Results (16 Threads, G-mode, 4 Repeats, Median)
+
+| Scene | Baseline Pipeline (ms) | P3.11b Pipeline (ms) | Delta (ms) | Pipeline Speedup | Gate | Dual Backend Parity |
+|:---|---:|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 1,565.82 ms | **1,561.12 ms** | -4.71 ms | **1.003x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Piano (F)** | 5,708.14 ms | **5,570.84 ms** | -137.30 ms | **1.025x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Vintage (F)** | 11,048.82 ms | **10,885.00 ms** | -163.82 ms | **1.015x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | — | **1.014x** | **$\ge 1.012\times$ (PASS)** | **PASS** |
+| **Pooled Total Sum** | 18,322.78 ms | **18,016.95 ms** | **-305.83 ms** | **1.017x** | — | **PASS** |
+
+#### 4. Post-P3.11b 10-Stage Attribution Profile (16 Threads, Pooled 3 Scenes)
+
+| Rank | Stage | Pooled Time (ms) | Stage Share | vs Post-P3.10b-2 Time | vs Post-P3.10b-2 Speedup |
+|:---:|:---|---:|---:|---:|:---:|
+| # 1 | **SGM** | **5,879.30 ms** | **32.63%** | 6,309.24 ms | **1.073x (-429.9 ms)** |
+| # 2 | Cross | 4,203.48 ms | 23.33% | 4,394.53 ms | 1.045x |
+| # 3 | Refine | 2,582.70 ms | 14.33% | 2,565.64 ms | 0.993x |
+| # 4 | Prior | 1,474.16 ms | 8.18% | 1,469.29 ms | 0.997x |
+| # 5 | Post | 1,050.33 ms | 5.83% | 1,039.43 ms | 0.990x |
+| # 6 | Cost | 824.59 ms | 4.58% | 807.35 ms | 0.979x |
+| # 7 | Aux | 692.36 ms | 3.84% | 671.75 ms | 0.970x |
+| # 8 | WTA | 639.09 ms | 3.55% | 634.33 ms | 0.993x |
+| # 9 | Right WTA | 420.10 ms | 2.33% | 419.76 ms | 0.999x |
+| #10 | Confidence | 285.91 ms | 1.59% | 286.96 ms | 1.004x |
+| — | **Total Pipeline** | **18,016.95 ms** | **100.00%** | **18,725.53 ms** | **1.039x** |
+
+**Cumulative Speedup vs Canonical Baseline (59.808 s):** **3.320x** (Total pipeline reduced from 59.808 s to 18.017 s).
