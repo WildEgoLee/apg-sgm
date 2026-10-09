@@ -629,6 +629,89 @@ Instead, an exact AVX2 integer quotient kernel was designed:
 | **P3.3c Post-Cost LUT** (`ad4ee3f`) | 37.905 s | -7.122 s | 1.557x |
 | **P3.4b Post-Refine LUT** (`a215d2e`) | 35.971 s | -1.933 s | 1.647x |
 | **P3.5b Post-SGM AVX2** (`0c100db`) | 32.335 s | -3.637 s | 1.850x |
-| **P3.7c Post-Cross AVX2** | **29.265 s** | **-3.070 s** | **2.044x** |
+| **P3.7c Post-Cross AVX2** (`702bb79`) | 29.265 s | -3.070 s | 2.044x |
+| **P3.8b-1 Post-First-Path Direct Store** | **26.434 s** | **-2.831 s** | **2.263x** |
 
-**Net execution time saved**: **-30.543 seconds per full-res F run** (**51.1% end-to-end reduction**, breaking the 2.0x cumulative speedup barrier!).
+**Net execution time saved**: **-33.374 seconds per full-res F run** (**55.8% end-to-end reduction**, over 2.26x cumulative speedup!).
+
+---
+
+## V3 Priority 3.8b-1: First-Path Direct Store & Accumulator Zero-Fill Elision
+
+**Status:** IMPLEMENTED & VERIFIED on branch `codex/p3-8b-first-path-direct-store`. 100% bit-exact dual backend parity across dense/packed backends on E and G modes across all test cases.
+
+### P3.8b-1a: Bottleneck Analysis & Memory Bandwidth Constraints
+
+Post-P3.7 10-stage profiling established SGM as the dominant bottleneck at **43.10% / 12.89s pooled** runtime. A dedicated micro-attribution experiment (`scratch/profile_sgm_micro_attribution.cpp`) uncovered the underlying hardware constraint:
+1. **Recurrence Compute is Fast**: Pure AVX2 recurrence arithmetic without accumulator updates required only **2.39s (21.54%)**.
+2. **Accumulator Traffic Dominates**: Accumulator Read-Modify-Write (RMW) traffic accounted for **8.71s (78.46%)** of SGM runtime. Across 8 paths on Vintage (11.22 GB active packed state space), 8 RMW passes saturate LLC and DRAM memory buses with over 179.5 GB of bandwidth.
+3. **Accumulator Zero-Fill Cost**: Initial `packed_cost32.fill(0)` took **1.03s (9.27%)** pooled solely clearing memory that is subsequently completely overwritten.
+
+### P3.8b-1b: First-Path Direct Store Architecture
+
+Because path P0 $(+1, 0)$ scans each row from $x = 0$ to $w-1$, it visits every active non-empty pixel slice $(x, y)$ in strictly deterministic row-major order:
+1. **Zero-Fill Elision**: `packed_cost32.allocate(layout, 0)` and `packed_cost32.fill(0)` are completely removed in favor of `packed_cost32.allocate_for_overwrite(layout)`.
+2. **First-Path Overwrite Mode (`AccumulateMode::Overwrite`)**:
+   - P0 is invoked with `AccumulateMode::Overwrite`, while subsequent paths (P1..P7) run with `AccumulateMode::Add`.
+   - **Scalar Path**:
+     ```cpp
+     if (c[di] == kInvalidCost) {
+         a[di] = kInvalidCost32;
+     } else if constexpr (Mode == AccumulateMode::Overwrite) {
+         a[di] = static_cast<uint32_t>(cur.vals[di]);
+     } else {
+         if (a[di] != kInvalidCost32) a[di] += static_cast<uint32_t>(cur.vals[di]);
+     }
+     ```
+   - **AVX2 Path**:
+     Elides `_mm256_loadu_si256(a + di)` and `_mm256_add_epi32(va, v_cur)` entirely:
+     ```cpp
+     if constexpr (Mode == AccumulateMode::Overwrite) {
+         __m256i v_new_a = _mm256_blendv_epi8(v_cur, v_ainv32, v_is_inv);
+         _mm256_storeu_si256(reinterpret_cast<__m256i*>(a + di), v_new_a);
+     }
+     ```
+3. **Hardware Impact**:
+   - Eliminates 1 full-volume write pass (zero-fill).
+   - Eliminates 1 full-volume read pass (P0 load).
+   - Reduces total SGM memory traffic by approximately **11.8% (2 out of 17 memory passes)**.
+
+---
+
+### P3.8b-1c: Performance Verification & Merge Gate Evaluation
+
+#### SGM Stage Results (16 Threads, Middlebury 2014 Full-Res F, G-mode)
+
+| Scene | Baseline SGM (P3.7) | P3.8b-1 SGM (ms) | SGM Speedup | SGM Time Delta | Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 921.89 ms | 699.60 ms | **1.318x** | -222.29 ms | 100% bit-exact |
+| **Piano (F)** | 3,486.66 ms | 2,745.26 ms | **1.270x** | -741.40 ms | 100% bit-exact |
+| **Vintage (F)** | 8,485.42 ms | 6,586.50 ms | **1.288x** | -1,898.92 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.292x** (Gate: $\ge 1.08\times$) | — | **PASS** |
+| **Pooled Total Sum** | 12,893.97 ms | 10,031.36 ms | **1.285x** | **-2,862.61 ms** | **PASS** |
+
+#### End-to-End Pipeline Results (16 Threads, G-mode, 4 Repeats)
+
+| Scene | P3.7 Pipeline (ms) | P3.8b-1 Pipeline (ms) | Pipeline Speedup | Pipeline Time Delta | Dual Backend Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 2,390.26 ms | 2,138.57 ms | **1.118x** | -251.69 ms | 100% bit-exact |
+| **Piano (F)** | 8,680.41 ms | 7,941.67 ms | **1.093x** | -738.74 ms | 100% bit-exact |
+| **Vintage (F)** | 18,194.61 ms | 16,353.67 ms | **1.113x** | -1,840.94 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.108x** (Gate: $\ge 1.025\times$) | — | **PASS** |
+| **Pooled Total Sum** | 29,265.28 ms | 26,433.91 ms | **1.107x** | **-2,831.37 ms** | **PASS** |
+
+#### Post-P3.8b-1 10-Stage Attribution Profile (16 Threads, Pooled 3 Scenes)
+
+| Rank | Stage | Pooled Time (ms) | Stage Share | vs Post-P3.7 Time | vs Post-P3.7 Speedup |
+|:---:|:---|---:|---:|---:|:---:|
+| # 1 | **SGM** | **10,089.04 ms** | **38.36%** | 12,885.76 ms | **1.277x** |
+| # 2 | Cost | 4,202.69 ms | 15.98% | 4,222.94 ms | 1.005x |
+| # 3 | Cross | 4,086.66 ms | 15.54% | 4,874.06 ms | 1.193x |
+| # 4 | Refine | 2,565.37 ms | 9.75% | 2,527.87 ms | 0.985x |
+| # 5 | Prior | 1,452.03 ms | 5.52% | 1,514.86 ms | 1.043x |
+| # 6 | Right WTA | 1,369.69 ms | 5.21% | 1,422.86 ms | 1.039x |
+| # 7 | Post | 1,044.56 ms | 3.97% | 1,085.12 ms | 1.039x |
+| # 8 | Aux | 664.65 ms | 2.53% | 710.22 ms | 1.069x |
+| # 9 | WTA | 619.45 ms | 2.36% | 708.20 ms | 1.143x |
+| #10 | Confidence | 284.32 ms | 1.08% | 309.28 ms | 1.088x |
+| — | **Total Pipeline** | **26,300.96 ms** | **100.00%** | **29,899.98 ms** | **1.137x** |

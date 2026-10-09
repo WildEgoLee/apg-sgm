@@ -10,6 +10,11 @@
 namespace apg {
 namespace detail {
 
+enum class AccumulateMode {
+    Overwrite,
+    Add
+};
+
 struct PathState {
     int dmin = 0;
     int dmax = 0;
