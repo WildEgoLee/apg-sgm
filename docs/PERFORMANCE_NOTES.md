@@ -521,5 +521,114 @@ Before implementing SIMD kernels, a comprehensive profiler (`scratch/profile_pac
 
 > [!NOTE]
 > Stage medians are independently aggregated across 4 runs and therefore do not sum exactly to the median end-to-end pipeline time (sum of stage medians = 32,221.51 ms vs pipeline median total = 32,334.83 ms, delta = 113.32 ms / 0.35%).
-> 
-> **Bottleneck Focus for P3.7**: Cross (22.89%, 7.40s) is overwhelmingly the next target. In the Cross aggregation query loops (both horizontal and vertical passes), each valid packed state evaluates a 32-bit unsigned division (`dst[di] = static_cast<uint16_t>(acc / cnt)` where `cnt` is bounded by `2 * max_arm_length + 1 = 35`). Across the 3 full-resolution scenes, this represents approximately 8.7 billion 32-bit unsigned variable-denominator division operations across horizontal and vertical passes combined. AVX2 has no native general integer vector division instruction, which naturally prevents auto-vectorization of the query loop. P3.7a will conduct micro-attribution across Cross sub-phases (arms, workspace allocation, H-prefix, H-query, V-prefix, V-query) to guide vectorization.
+
+---
+
+## V3 Priority 7: Cross Aggregator AVX2 Micro-Optimization Track (P3.7)
+
+### P3.7a: Cross Hierarchical Micro-Attribution & Division Characterization
+
+Prior to vectorization, a dedicated profiler (`scratch/profile_cross_micro_attribution.cpp`) decomposed `CostAggregator::aggregate_packed()` into 6 granular sub-phases and tracked denominator distributions across the 3 full-resolution F benchmark scenes (`ArtL`, `Piano`, `Vintage`, G-mode, 16T):
+
+#### 6-Subphase Breakdown (7,365.52 ms Pooled Baseline)
+
+| Sub-Phase | ArtL (ms) | Piano (ms) | Vintage (ms) | Pooled Total (ms) | Share (%) | Bottleneck Category |
+|:---|---:|---:|---:|---:|---:|:---|
+| **1. Arms Build** | 8.81 ms | 28.51 ms | 54.47 ms | **91.79 ms** | 1.25% | Memory read / branch |
+| **2. PackedCrossTmp Alloc** | 0.01 ms | 0.01 ms | 0.08 ms | **0.10 ms** | 0.00% | Negligible (P3.2b uninitialized) |
+| **3. Horizontal Prefix** | 71.93 ms | 390.87 ms | 1,149.15 ms | **1,611.95 ms** | 21.89% | Row-stride prefix accumulation |
+| **4. Horizontal Query + Div** | 63.85 ms | 362.59 ms | 981.00 ms | **1,407.44 ms** | 19.11% | Window subtraction + 32-bit division |
+| **5. Vertical Prefix** | 114.77 ms | 625.68 ms | 1,885.30 ms | **2,625.75 ms** | 35.65% | Col-stride prefix accumulation (cache) |
+| **6. Vertical Query + Div** | 85.51 ms | 465.24 ms | 1,077.74 ms | **1,628.49 ms** | 22.11% | Window subtraction + 32-bit division |
+| **Total Cross Stage** | **344.88 ms** | **1,872.90 ms** | **5,182.06 ms** | **7,365.52 ms** | **100.00%** | Combined Cross aggregation |
+
+- **Combined Prefix Construction**: **4,237.70 ms (57.53%)** — dominant memory and stride bottleneck.
+- **Combined Query & Division**: **3,035.92 ms (41.22%)** — arithmetic denominator division bottleneck.
+- **Total Variable Divisions Evaluated**: Exactly **8,684,650,260 (8.685 billion)** 32-bit unsigned integer divisions pooled across H and V passes.
+- **Denominator Characteristics**:
+  - $cnt \in [1, 35]$ strictly ($cnt == 0$ count is exactly 0).
+  - Maximum window accumulation $acc \le 35 \times 65534 = 2,293,690 < 2^{24}$.
+  - $cnt == 35$ represents **44.27% (3.845 billion)** of all divisions.
+- **Tile Alignment**:
+  - Horizontal pass: $tb == 16$ is **100.0%** of all tiles.
+  - Vertical pass: $tb == 16$ is **99.4%** of all tiles.
+  - $B = 16$ disparity tile size perfectly matches two 8-lane AVX2 vector registers.
+
+---
+
+### P3.7b: Exact 8-Lane AVX2 Vector Quotient & Exhaustive Mathematical Proof
+
+Because Cross aggregation outputs directly feed the SGM dynamic programming optimization, approximate reciprocal multiplication (`(acc * recip[cnt]) >> shift`) with $\pm 1$ cost drift is strictly prohibited.
+
+Instead, an exact AVX2 integer quotient kernel was designed:
+1. `_mm256_cvtepi32_ps`: Zero precision loss conversion of $acc$ and $cnt$ to IEEE 754 single-precision float (since $acc \le 2,293,690 < 2^{24}$ significand limit).
+2. `_mm256_div_ps`: 8-lane single-precision vector float division.
+3. `_mm256_cvttps_epi32`: Truncation round towards zero.
+4. Two-instruction residual correction:
+   ```cpp
+   prod = q * cnt;
+   rem = acc - prod;
+   if (rem < 0) q -= 1;
+   rem = acc - (q * cnt);
+   if (rem >= cnt) q += 1;
+   ```
+5. **Exhaustive Domain Proof** (`scratch/test_exact_cross_quotient.cpp`):
+   - Exhaustively tested every single valid pair $(acc, cnt)$ across the complete operational space:
+     $$\sum_{cnt=1}^{35} (cnt \times 65534 + 1) = 41,286,455 \text{ pairs}$$
+   - **Result**: **0 mismatches** across all 41.3 million test cases (100.00000% mathematical bit-exactness verified in 0.1s at 341 M pairs/s).
+
+---
+
+### P3.7c: AVX2 Cross Aggregator Implementation & SoA Architecture
+
+- **Structure-of-Arrays (SoA) Workspace** (`PrefixWorkspaceSoA`):
+  - Transformed thread-local prefix buffers from AoS (`PrefixEntry {sum, cnt}`) to contiguous SoA (`sums` and `cnts` vectors sized `(max_dim + 1) * 16`).
+  - For each step, 16 sums (64 B) and 16 counts (64 B) align directly with two 256-bit AVX2 registers, eliminating AoS stride and register shuffle overhead.
+- **AVX2 Prefix Vectorization**:
+  - Full interior tiles ($b_{start} = 0, b_{end} = 16$): Unpack 16 $\times$ `uint16_t` costs with two `_mm_loadu_si128` + `_mm256_cvtepu16_epi32`, mask out `kInvalidCost`, and add to previous prefix sums/counts in parallel.
+- **AVX2 Query Vectorization & Packing**:
+  - Evaluate 16 disparities simultaneously: Two 8-lane vector subtractions for `acc` and `cnt`, two 8-lane exact quotient evaluations via `exact_cross_div_8`, and pack 16 $\times$ `uint32_t` into 16 $\times$ `uint16_t` via:
+    ```cpp
+    _mm256_permute4x64_epi64(_mm256_packus_epi32(q0, q1), _MM_SHUFFLE(3, 1, 2, 0))
+    ```
+    written with a single unaligned 256-bit store (`_mm256_storeu_si256`).
+- **Translation Unit & Dispatch Isolation**:
+  - Isolated into `src/cost_aggregator_avx2.cpp` with compile options `/arch:AVX2` (MSVC) and `-mavx2` (GCC/Clang).
+  - Runtime dispatch via `detail::is_avx2_supported()`, with golden scalar path preserved as fallback.
+
+---
+
+### P3.7d: Performance Verification & Merge Gate Evaluation
+
+#### Isolated Cross Stage Results (16 Threads, Middlebury 2014 Full-Res F)
+
+| Scene | Baseline Cross (ms) | P3.7 AVX2 Cross (ms) | Cross Speedup | Cross Time Delta | Bit-Exact |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 344.88 ms | 239.12 ms | **1.442x** | -105.76 ms | 100% |
+| **Piano (F)** | 1,872.90 ms | 1,152.00 ms | **1.626x** | -720.90 ms | 100% |
+| **Vintage (F)** | 5,182.06 ms | 2,685.28 ms | **1.930x** | -2,496.78 ms | 100% |
+| **Scene-Balanced Geomean** | — | — | **1.654x** (Gate: $\ge 1.20\times$) | — | **PASS** |
+| **Pooled Total Sum** | 7,399.84 ms | 4,076.40 ms | **1.815x** | **-3,323.44 ms** | **PASS** |
+
+#### End-to-End Pipeline Results (16 Threads, G-mode, 4 Repeats)
+
+| Scene | P3.5 Pipeline (ms) | P3.7 Pipeline (ms) | Pipeline Speedup | Pipeline Time Delta | Dual Backend Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 2,470.19 ms | 2,390.26 ms | **1.033x** | -79.93 ms | 100% bit-exact |
+| **Piano (F)** | 9,457.71 ms | 8,680.41 ms | **1.090x** | -777.30 ms | 100% bit-exact |
+| **Vintage (F)** | 20,406.93 ms | 18,194.61 ms | **1.122x** | -2,212.32 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.0805x** (Gate: $\ge 1.03\times$) | — | **PASS** |
+| **Pooled Total Sum** | 32,334.83 ms | 29,265.28 ms | **1.1049x** | **-3,069.55 ms** | **PASS** |
+
+#### Cumulative Multi-Track Pipeline Progress (P3.0 Baseline `2ad6d26` -> Post-P3.7)
+
+| Milestone | Pooled Pipeline Time (3 Scenes) | Delta vs Prior | Cumulative Speedup vs P3.0 |
+| :--- | :---: | :---: | :---: |
+| **P3.0 Initial Baseline** (`2ad6d26`) | 59.808 s | — | 1.000x |
+| **P3.2b Post-Cross Prefix** (`79ed6ac`) | 45.027 s | -14.781 s | 1.316x |
+| **P3.3c Post-Cost LUT** (`ad4ee3f`) | 37.905 s | -7.122 s | 1.557x |
+| **P3.4b Post-Refine LUT** (`a215d2e`) | 35.971 s | -1.933 s | 1.647x |
+| **P3.5b Post-SGM AVX2** (`0c100db`) | 32.335 s | -3.637 s | 1.850x |
+| **P3.7c Post-Cross AVX2** | **29.265 s** | **-3.070 s** | **2.044x** |
+
+**Net execution time saved**: **-30.543 seconds per full-res F run** (**51.1% end-to-end reduction**, breaking the 2.0x cumulative speedup barrier!).

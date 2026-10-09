@@ -15,6 +15,7 @@ add_library(apg_sgm
     src/cost_computer.cpp
     src/prior_estimator.cpp
     src/cost_aggregator.cpp
+    src/cost_aggregator_avx2.cpp
     src/sgm_optimizer.cpp
     src/sgm_optimizer_avx2.cpp
     src/confidence_estimator.cpp
@@ -34,10 +35,10 @@ endif()
 
 if(MSVC)
     target_compile_options(apg_sgm PRIVATE /W4)
-    set_source_files_properties(src/sgm_optimizer_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    set_source_files_properties(src/sgm_optimizer_avx2.cpp src/cost_aggregator_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 else()
     target_compile_options(apg_sgm PRIVATE -Wall -Wextra -Wpedantic)
-    set_source_files_properties(src/sgm_optimizer_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+    set_source_files_properties(src/sgm_optimizer_avx2.cpp src/cost_aggregator_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
 endif()
 
 add_executable(apg-stereo apps/run_stereo.cpp)
