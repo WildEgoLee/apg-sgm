@@ -80,56 +80,74 @@ void wta_right_from_packed_volume(const PipelineConfig& cfg, const PackedCostVol
                                   Image32f& disp_right) {
     const int w = vol.width();
     const int h = vol.height();
-    const int d0 = cfg.min_disparity;
-    const int D = cfg.max_disparity - cfg.min_disparity;
     disp_right = Image32f(w, h, -1.f);
+    if (vol.empty() || w <= 0 || h <= 0) return;
+
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel
 #endif
-    for (int y = 0; y < h; ++y) {
-        for (int xr = 0; xr < w; ++xr) {
-            int best_d = -1;
-            uint32_t best = UINT32_MAX;
-            for (int d = d0; d < d0 + D; ++d) {
-                const int xl = xr + d;
-                if (xl < 0 || xl >= w) continue;
-                if (!vol.contains(xl, y, d)) continue;
-                const uint16_t c = vol.at(xl, y, d);
-                if (c == kInvalidCost) continue;
-                if (c < best) {
-                    best = c;
-                    best_d = d;
+    {
+        std::vector<uint16_t> best_cost(w);
+        std::vector<int> best_d(w);
+#if defined(_OPENMP)
+#pragma omp for schedule(dynamic, 4)
+#endif
+        for (int y = 0; y < h; ++y) {
+            std::fill(best_cost.begin(), best_cost.end(), kInvalidCost);
+            std::fill(best_d.begin(), best_d.end(), -1);
+
+            for (int xl = 0; xl < w; ++xl) {
+                const int lo = vol.dmin(xl, y);
+                const int hi = vol.dmax(xl, y);
+                const int count = hi - lo;
+                if (count <= 0) continue;
+
+                const uint16_t* s = vol.slice(xl, y);
+                for (int di = 0; di < count; ++di) {
+                    const int d = lo + di;
+                    const int xr = xl - d;
+                    if (xr < 0 || xr >= w) continue;
+
+                    const uint16_t c = s[di];
+                    if (c != kInvalidCost && c < best_cost[xr]) {
+                        best_cost[xr] = c;
+                        best_d[xr] = d;
+                    }
                 }
             }
-            if (best_d >= 0) {
-                float dval = static_cast<float>(best_d);
-                if (cfg.post.subpixel) {
-                    const int xl_m = xr + best_d - 1;
-                    const int xl_0 = xr + best_d;
-                    const int xl_p = xr + best_d + 1;
-                    if (xl_m >= 0 && xl_m < w &&
-                        xl_0 >= 0 && xl_0 < w &&
-                        xl_p >= 0 && xl_p < w &&
-                        vol.contains(xl_m, y, best_d - 1) &&
-                        vol.contains(xl_0, y, best_d) &&
-                        vol.contains(xl_p, y, best_d + 1)) {
-                        const uint16_t cm = vol.at(xl_m, y, best_d - 1);
-                        const uint16_t c0 = vol.at(xl_0, y, best_d);
-                        const uint16_t cp = vol.at(xl_p, y, best_d + 1);
-                        if (cm != kInvalidCost && c0 != kInvalidCost && cp != kInvalidCost) {
-                            const float fcm = static_cast<float>(cm);
-                            const float fc0 = static_cast<float>(c0);
-                            const float fcp = static_cast<float>(cp);
-                            const float denom = fcm - 2.f * fc0 + fcp;
-                            if (std::abs(denom) > 1e-6f) {
-                                float delta = 0.5f * (fcm - fcp) / denom;
-                                delta = clampf(delta, -0.5f, 0.5f);
-                                dval += delta;
+
+            for (int xr = 0; xr < w; ++xr) {
+                const int bd = best_d[xr];
+                if (bd >= 0) {
+                    float dval = static_cast<float>(bd);
+                    if (cfg.post.subpixel) {
+                        const int xl_m = xr + bd - 1;
+                        const int xl_0 = xr + bd;
+                        const int xl_p = xr + bd + 1;
+                        if (xl_m >= 0 && xl_m < w &&
+                            xl_0 >= 0 && xl_0 < w &&
+                            xl_p >= 0 && xl_p < w &&
+                            vol.contains(xl_m, y, bd - 1) &&
+                            vol.contains(xl_0, y, bd) &&
+                            vol.contains(xl_p, y, bd + 1)) {
+                            const uint16_t cm = vol.at(xl_m, y, bd - 1);
+                            const uint16_t c0 = vol.at(xl_0, y, bd);
+                            const uint16_t cp = vol.at(xl_p, y, bd + 1);
+                            if (cm != kInvalidCost && c0 != kInvalidCost && cp != kInvalidCost) {
+                                const float fcm = static_cast<float>(cm);
+                                const float fc0 = static_cast<float>(c0);
+                                const float fcp = static_cast<float>(cp);
+                                const float denom = fcm - 2.f * fc0 + fcp;
+                                if (std::abs(denom) > 1e-6f) {
+                                    float delta = 0.5f * (fcm - fcp) / denom;
+                                    delta = clampf(delta, -0.5f, 0.5f);
+                                    dval += delta;
+                                }
                             }
                         }
                     }
+                    disp_right.at(xr, y) = dval;
                 }
-                disp_right.at(xr, y) = dval;
             }
         }
     }
