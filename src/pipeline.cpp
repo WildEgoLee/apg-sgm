@@ -205,10 +205,23 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
         agg.aggregate_packed(cfg_, out.left_gray, out.packed_cost);
         const auto t5 = time_now();
 
-        sgm.optimize_packed(cfg_, out.left_gray, out.packed_cost, out.packed_cost32);
+        const int npath = (cfg_.sgm.paths == PathType::Path8) ? 8 : 4;
+        const bool use_u16 = can_use_u16_sgm_accumulator(cfg_, npath);
+
+        if (use_u16) {
+            out.packed_cost32.release();
+            sgm.optimize_packed(cfg_, out.left_gray, out.packed_cost, out.packed_sgm16);
+        } else {
+            out.packed_sgm16.release();
+            sgm.optimize_packed(cfg_, out.left_gray, out.packed_cost, out.packed_cost32);
+        }
         const auto t6 = time_now();
 
-        sgm.winner_take_all_packed(cfg_, out.packed_cost32, out.disparity, &best, &second);
+        if (use_u16) {
+            sgm.winner_take_all_packed(cfg_, out.packed_sgm16, out.disparity, &best, &second);
+        } else {
+            sgm.winner_take_all_packed(cfg_, out.packed_cost32, out.disparity, &best, &second);
+        }
         const auto t7 = time_now();
 
         t_cost_ms = elapsed_ms(t2, t3);
@@ -272,12 +285,13 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
 
         if (use_packed) {
             const size_t c16 = out.packed_cost.data_bytes();
-            const size_t c32 = out.packed_cost32.data_bytes();
+            const size_t sgm_acc_bytes = out.packed_sgm16.empty() ? out.packed_cost32.data_bytes()
+                                                                  : out.packed_sgm16.data_bytes();
             const size_t lay = out.packed_cost.layout_bytes();
             const size_t cross_tmp = cfg_.aggregation.enable ? c16 : 0;
             stats->cost_bytes = c16 + lay;
-            stats->aggregated_cost_bytes = c32;
-            stats->estimated_peak_bytes = std::max(c16 + cross_tmp, c16 + c32) + lay;
+            stats->aggregated_cost_bytes = sgm_acc_bytes;
+            stats->estimated_peak_bytes = std::max(c16 + cross_tmp, c16 + sgm_acc_bytes) + lay;
         } else {
             const size_t c16 = out.cost.bytes();
             const size_t c32 = out.cost32.bytes();

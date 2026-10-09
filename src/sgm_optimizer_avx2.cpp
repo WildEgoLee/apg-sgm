@@ -12,11 +12,11 @@ namespace detail {
 
 namespace {
 
-template <AccumulateMode Mode>
+template <typename TAcc, AccumulateMode Mode>
 inline void process_pixel_packed_avx2(int x, int y, bool has_prev, int px, int py,
                                       int P1, const SgmParams& sgm_cfg,
                                       const Image8& gray, const PackedCostVolume16& base,
-                                      PackedCostVolume32& acc,
+                                      PackedCostVolume<TAcc>& acc,
                                       PathState& prev, PathState& cur) {
     const int dmin_c = base.dmin(x, y);
     const int dmax_c = base.dmax(x, y);
@@ -32,23 +32,24 @@ inline void process_pixel_packed_avx2(int x, int y, bool has_prev, int px, int p
     }
 
     const uint16_t* c = base.slice(x, y);
-    uint32_t* a = acc.slice(x, y);
+    TAcc* a = acc.slice(x, y);
+    const TAcc inv_acc = invalid_cost<TAcc>();
 
     if (!has_prev || prev.vals.empty()) {
         for (int di = 0; di < D_c; ++di) {
             if (c[di] == kInvalidCost) {
                 cur.vals[di] = kPathInf;
-                a[di] = kInvalidCost32;
+                a[di] = inv_acc;
             } else {
                 cur.vals[di] = static_cast<int>(c[di]);
                 if (cur.vals[di] < cur.min_val) {
                     cur.min_val = cur.vals[di];
                 }
                 if constexpr (Mode == AccumulateMode::Overwrite) {
-                    a[di] = static_cast<uint32_t>(cur.vals[di]);
+                    a[di] = static_cast<TAcc>(cur.vals[di]);
                 } else {
-                    if (a[di] != kInvalidCost32) {
-                        a[di] += static_cast<uint32_t>(cur.vals[di]);
+                    if (a[di] != inv_acc) {
+                        a[di] += static_cast<TAcc>(cur.vals[di]);
                     }
                 }
             }
@@ -69,7 +70,7 @@ inline void process_pixel_packed_avx2(int x, int y, bool has_prev, int px, int p
         const bool valid_cur = (c[di] != kInvalidCost);
         if (!valid_cur) {
             cur.vals[di] = kPathInf;
-            a[di] = kInvalidCost32;
+            a[di] = inv_acc;
             return;
         }
 
@@ -102,10 +103,10 @@ inline void process_pixel_packed_avx2(int x, int y, bool has_prev, int px, int p
         }
 
         if constexpr (Mode == AccumulateMode::Overwrite) {
-            a[di] = static_cast<uint32_t>(cur.vals[di]);
+            a[di] = static_cast<TAcc>(cur.vals[di]);
         } else {
-            if (a[di] != kInvalidCost32) {
-                a[di] += static_cast<uint32_t>(cur.vals[di]);
+            if (a[di] != inv_acc) {
+                a[di] += static_cast<TAcc>(cur.vals[di]);
             }
         }
     };
@@ -173,16 +174,37 @@ inline void process_pixel_packed_avx2(int x, int y, bool has_prev, int px, int p
 
             v_min_cur = _mm256_min_epi32(v_min_cur, v_cur);
 
-            if constexpr (Mode == AccumulateMode::Overwrite) {
-                __m256i v_new_a = _mm256_blendv_epi8(v_cur, v_ainv32, v_is_inv);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(a + di), v_new_a);
+            if constexpr (std::is_same_v<TAcc, uint16_t>) {
+                if constexpr (Mode == AccumulateMode::Overwrite) {
+                    __m256i v_new_a32 = _mm256_blendv_epi8(v_cur, v_cinv16_32, v_is_inv);
+                    __m128i lo = _mm256_castsi256_si128(v_new_a32);
+                    __m128i hi = _mm256_extracti128_si256(v_new_a32, 1);
+                    __m128i v_new_a16 = _mm_packus_epi32(lo, hi);
+                    _mm_storeu_si128(reinterpret_cast<__m128i*>(a + di), v_new_a16);
+                } else {
+                    __m128i va16 = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a + di));
+                    __m256i va = _mm256_cvtepu16_epi32(va16);
+                    __m256i va_is_inv = _mm256_cmpeq_epi32(va, v_cinv16_32);
+                    __m256i v_any_inv = _mm256_or_si256(v_is_inv, va_is_inv);
+                    __m256i va_added = _mm256_add_epi32(va, v_cur);
+                    __m256i v_new_a32 = _mm256_blendv_epi8(va_added, v_cinv16_32, v_any_inv);
+                    __m128i lo = _mm256_castsi256_si128(v_new_a32);
+                    __m128i hi = _mm256_extracti128_si256(v_new_a32, 1);
+                    __m128i v_new_a16 = _mm_packus_epi32(lo, hi);
+                    _mm_storeu_si128(reinterpret_cast<__m128i*>(a + di), v_new_a16);
+                }
             } else {
-                __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + di));
-                __m256i va_is_inv = _mm256_cmpeq_epi32(va, v_ainv32);
-                __m256i v_any_inv = _mm256_or_si256(v_is_inv, va_is_inv);
-                __m256i va_added = _mm256_add_epi32(va, v_cur);
-                __m256i v_new_a = _mm256_blendv_epi8(va_added, v_ainv32, v_any_inv);
-                _mm256_storeu_si256(reinterpret_cast<__m256i*>(a + di), v_new_a);
+                if constexpr (Mode == AccumulateMode::Overwrite) {
+                    __m256i v_new_a = _mm256_blendv_epi8(v_cur, v_ainv32, v_is_inv);
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(a + di), v_new_a);
+                } else {
+                    __m256i va = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(a + di));
+                    __m256i va_is_inv = _mm256_cmpeq_epi32(va, v_ainv32);
+                    __m256i v_any_inv = _mm256_or_si256(v_is_inv, va_is_inv);
+                    __m256i va_added = _mm256_add_epi32(va, v_cur);
+                    __m256i v_new_a = _mm256_blendv_epi8(va_added, v_ainv32, v_any_inv);
+                    _mm256_storeu_si256(reinterpret_cast<__m256i*>(a + di), v_new_a);
+                }
             }
         }
 
@@ -205,10 +227,10 @@ inline void process_pixel_packed_avx2(int x, int y, bool has_prev, int px, int p
     std::swap(prev, cur);
 }
 
-template <AccumulateMode Mode>
+template <typename TAcc, AccumulateMode Mode>
 void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gray,
                                      const PackedCostVolume16& base,
-                                     PackedCostVolume32& acc, int dx, int dy) {
+                                     PackedCostVolume<TAcc>& acc, int dx, int dy) {
     const int w = base.width();
     const int h = base.height();
     const int P1 = cfg.sgm.P1;
@@ -220,7 +242,7 @@ void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gr
         for (int y = 0; y < h; ++y) {
             PathState prev, cur;
             for (int x = 0; x < w; ++x) {
-                process_pixel_packed_avx2<Mode>(x, y, x > 0, x - 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed_avx2<TAcc, Mode>(x, y, x > 0, x - 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == -1 && dy == 0) {
@@ -230,7 +252,7 @@ void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gr
         for (int y = 0; y < h; ++y) {
             PathState prev, cur;
             for (int x = w - 1; x >= 0; --x) {
-                process_pixel_packed_avx2<Mode>(x, y, x + 1 < w, x + 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed_avx2<TAcc, Mode>(x, y, x + 1 < w, x + 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == 0 && dy == 1) {
@@ -240,7 +262,7 @@ void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gr
         for (int x = 0; x < w; ++x) {
             PathState prev, cur;
             for (int y = 0; y < h; ++y) {
-                process_pixel_packed_avx2<Mode>(x, y, y > 0, x, y - 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed_avx2<TAcc, Mode>(x, y, y > 0, x, y - 1, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == 0 && dy == -1) {
@@ -250,7 +272,7 @@ void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gr
         for (int x = 0; x < w; ++x) {
             PathState prev, cur;
             for (int y = h - 1; y >= 0; --y) {
-                process_pixel_packed_avx2<Mode>(x, y, y + 1 < h, x, y + 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed_avx2<TAcc, Mode>(x, y, y + 1 < h, x, y + 1, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else {
@@ -298,7 +320,7 @@ void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gr
             bool hp = false;
             int px = x, py = y;
             while (x >= 0 && x < w && y >= 0 && y < h) {
-                process_pixel_packed_avx2<Mode>(x, y, hp, px, py, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed_avx2<TAcc, Mode>(x, y, hp, px, py, P1, cfg.sgm, gray, base, acc, prev, cur);
                 hp = true;
                 px = x;
                 py = y;
@@ -313,12 +335,23 @@ void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gr
 
 void aggregate_path_packed_avx2(const PipelineConfig& cfg, const Image8& gray,
                                 const PackedCostVolume16& base,
+                                PackedCostVolume16& acc, int dx, int dy,
+                                AccumulateMode mode) {
+    if (mode == AccumulateMode::Overwrite) {
+        aggregate_path_packed_avx2_impl<uint16_t, AccumulateMode::Overwrite>(cfg, gray, base, acc, dx, dy);
+    } else {
+        aggregate_path_packed_avx2_impl<uint16_t, AccumulateMode::Add>(cfg, gray, base, acc, dx, dy);
+    }
+}
+
+void aggregate_path_packed_avx2(const PipelineConfig& cfg, const Image8& gray,
+                                const PackedCostVolume16& base,
                                 PackedCostVolume32& acc, int dx, int dy,
                                 AccumulateMode mode) {
     if (mode == AccumulateMode::Overwrite) {
-        aggregate_path_packed_avx2_impl<AccumulateMode::Overwrite>(cfg, gray, base, acc, dx, dy);
+        aggregate_path_packed_avx2_impl<uint32_t, AccumulateMode::Overwrite>(cfg, gray, base, acc, dx, dy);
     } else {
-        aggregate_path_packed_avx2_impl<AccumulateMode::Add>(cfg, gray, base, acc, dx, dy);
+        aggregate_path_packed_avx2_impl<uint32_t, AccumulateMode::Add>(cfg, gray, base, acc, dx, dy);
     }
 }
 
