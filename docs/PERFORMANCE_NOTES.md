@@ -632,9 +632,10 @@ Instead, an exact AVX2 integer quotient kernel was designed:
 | **P3.7c Post-Cross AVX2** (`702bb79`) | 29.265 s | -3.070 s | 2.044x |
 | **P3.8b-1 Post-First-Path Direct Store** (`d63317f`) | 26.434 s | -2.831 s | 2.263x |
 | **P3.8b-2b Post-Packed SGM U16 Accumulator** (`70b7655`) | 22.798 s | -3.636 s | 2.623x |
-| **P3.9a Post-Packed Right-WTA State-Major** | **21.799 s** | **-0.999 s** | **2.744x** |
+| **P3.9a Post-Packed Right-WTA State-Major** (`d0fba40`) | 21.799 s | -0.999 s | 2.744x |
+| **P3.9b-2 Post-Packed Cost AVX2** | **18.949 s** | **-2.850 s** | **3.156x** |
 
-**Net execution time saved**: **-38.009 seconds per full-res F run** (**63.6% end-to-end reduction**, over 2.74x cumulative speedup!).
+**Net execution time saved**: **-40.859 seconds per full-res F run** (**68.3% end-to-end reduction**, over 3.15x cumulative speedup!).
 
 ---
 
@@ -905,3 +906,69 @@ Following P3.8b-2b's reduction of SGM runtime to 30.20%, stage attribution revea
 | # 9 | **Right WTA** | **417.01 ms** | **1.91%** | **1,392.35 ms** | **3.339x** |
 | #10 | Confidence | 289.84 ms | 1.33% | 284.10 ms | 0.980x |
 | — | **Total Pipeline** | **21,799.05 ms** | **100.00%** | **22,647.70 ms** | **1.039x** |
+
+---
+
+## V3 Priority 3.9b-2: Packed Cost AVX2 Production Implementation & Dispatch
+
+**Status:** IMPLEMENTED & VERIFIED on branch `codex/p3-9b2-packed-cost-avx2-production`. 100% bit-exact dual backend parity across dense/packed backends on E and G modes across all test cases.
+
+### P3.9b-2a: Production Architecture & Correctness Guards
+
+Following P3.9b-1's feasibility study (99.56% 8-lane coverage, 6.75x isolated prototype speedup, 0 mismatches across 4.34B states), the production 8-lane AVX2 kernel was implemented:
+
+1. **Isolated Compilation Unit & Dynamic Dispatch**:
+   - Implemented in dedicated translation unit `src/cost_computer_avx2.cpp` with header `src/cost_computer_avx2.hpp`.
+   - CMake sets `/arch:AVX2` (MSVC) or `-mavx2` (GCC/Clang) exclusively on `src/cost_computer_avx2.cpp`, avoiding compiler flag contamination.
+   - Preserves public `CostComputer` API unchanged; dispatches to `detail::compute_volume_packed_avx2()` if `cfg.cost.census == CensusType::SymmetricCensus9x7 && detail::is_avx2_supported()`, falling back to scalar golden otherwise.
+
+2. **Vector-Safe Geometric Bounds Guard**:
+   - Rather than assuming non-negative disparities ($d \ge 0$), the production kernel dynamically computes the exact vector-safe disparity interval $[di_{vstart}, di_{vend})$:
+     $$di_{vstart} = \max(0, x - lo - w + 1)$$
+     $$di_{vend} = \min(D_p, x - lo + 1)$$
+   - Only disparity states within this interval enter the 8-lane SIMD kernel, ensuring $xr_0 \dots xr_7$ are strictly bounded within $[0, w)$.
+   - States outside $[di_{vstart}, di_{vend})$ (including negative disparity regimes and non-multiple-of-8 boundaries) are evaluated via a shared, inlined template scalar helper `evaluate_scalar_cost_state_t<UseAd, UseGrad>()`.
+
+3. **Compile-Time Branch Elimination & Strict FP Order**:
+   - The outer function specializes `compute_volume_packed_avx2_impl<bool UseAd, bool UseGrad>()` across the four configuration combinations, eliminating per-block runtime branching.
+   - Arithmetic order strictly matches scalar golden: Census gather $\to$ AD gather $\to$ Grad gather $\to$ explicit mul $\to$ explicit add ($0.5\text{f}$) $\to$ `cvttps_epi32` truncation.
+
+---
+
+### P3.9b-2b: Performance Verification & Merge Gate Evaluation
+
+#### Cost Stage Results (16 Threads, Middlebury 2014 Full-Res F, G-mode, 4 Repeats)
+
+| Scene | Baseline Cost (P3.9a) | P3.9b-2 Cost (ms) | Cost Speedup | Cost Time Delta | Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 257.72 ms | **57.64 ms** | **4.471x** | -200.08 ms | 100% bit-exact |
+| **Piano (F)** | 963.65 ms | **210.57 ms** | **4.576x** | -753.08 ms | 100% bit-exact |
+| **Vintage (F)** | 2,512.75 ms | **523.05 ms** | **4.804x** | -1,989.70 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **4.615x** (Gate: $\ge 4.0\times$) | — | **PASS** |
+| **Pooled Total Sum** | 3,734.11 ms | **791.26 ms** | **4.719x** | **-2,942.85 ms (-2.94 s)** | **PASS** |
+
+#### End-to-End Pipeline Results (16 Threads, G-mode, 4 Repeats)
+
+| Scene | P3.9a Pipeline (ms) | P3.9b-2 Pipeline (ms) | Pipeline Speedup | Pipeline Time Delta | Dual Backend Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 1,842.87 ms | 1,622.26 ms | **1.136x** | -220.61 ms | 100% bit-exact |
+| **Piano (F)** | 6,775.97 ms | 6,076.35 ms | **1.115x** | -699.62 ms | 100% bit-exact |
+| **Vintage (F)** | 13,180.21 ms | 11,250.24 ms | **1.172x** | -1,929.97 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.141x** (Gate: $\ge 1.10\times$) | — | **PASS** |
+| **Pooled Total Sum** | 21,799.05 ms | **18,948.85 ms** | **1.150x** | **-2,850.20 ms (-2.85 s)** | **PASS** |
+
+#### Post-P3.9b-2 10-Stage Attribution Profile (16 Threads, Pooled 3 Scenes)
+
+| Rank | Stage | Pooled Time (ms) | Stage Share | vs Post-P3.9a Time | vs Post-P3.9a Speedup |
+|:---:|:---|---:|---:|---:|:---:|
+| # 1 | **SGM** | **6,932.88 ms** | **36.59%** | 6,927.14 ms | 0.999x |
+| # 2 | Cross | 4,088.95 ms | 21.58% | 4,080.73 ms | 0.998x |
+| # 3 | Refine | 2,595.15 ms | 13.70% | 2,558.37 ms | 0.986x |
+| # 4 | Prior | 1,455.20 ms | 7.68% | 1,482.68 ms | 1.019x |
+| # 5 | Post | 1,040.97 ms | 5.49% | 1,035.03 ms | 0.994x |
+| # 6 | **Cost** | **791.26 ms** | **4.18%** | **3,734.11 ms** | **4.719x (-78.8% time!)** |
+| # 7 | Aux | 661.36 ms | 3.49% | 681.32 ms | 1.030x |
+| # 8 | WTA | 639.49 ms | 3.37% | 630.33 ms | 0.986x |
+| # 9 | Right WTA | 418.93 ms | 2.21% | 417.01 ms | 0.995x |
+| #10 | Confidence | 287.73 ms | 1.52% | 289.84 ms | 1.007x |
+| — | **Total Pipeline** | **18,948.85 ms** | **100.00%** | **21,799.05 ms** | **1.150x** |

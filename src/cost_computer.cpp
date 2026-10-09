@@ -1,4 +1,6 @@
 #include "apg_sgm/cost_computer.hpp"
+#include "cost_computer_avx2.hpp"
+#include "cpu_features.hpp"
 #include "discrete_cost_lut.hpp"
 
 #include <cmath>
@@ -195,6 +197,11 @@ void CostComputer::compute_volume_packed(const PipelineConfig& cfg,
     }
 
     const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
+    if (sym && detail::is_avx2_supported()) {
+        detail::compute_volume_packed_avx2(cfg, buf, packed_cost);
+        return;
+    }
+
     const bool use_ad = cfg.cost.use_ad;
     const bool use_grad = cfg.cost.use_grad;
     const float eta = cfg.cost.eta_ad;
