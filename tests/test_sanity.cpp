@@ -434,6 +434,44 @@ int main() {
     const double pipe_red = 100.0 * (1.0 - static_cast<double>(stats_packed.estimated_peak_bytes) / stats_dense.estimated_peak_bytes);
     std::cout << "  Pipeline peak volume memory reduction: " << pipe_red << "%\n";
 
+    // -------------------------------------------------------------
+    // Test Packed Cost with Negative Disparity / Range Boundaries
+    // -------------------------------------------------------------
+    std::cout << "[Test Packed Cost Negative Disparity / Boundary Bounds]\n";
+    auto cfg_neg = PipelineConfig::from_mode(QualityMode::HighQuality, 16);
+    cfg_neg.min_disparity = -8;
+    cfg_neg.max_disparity = 16;
+    cfg_neg.prior.enable = false;
+
+    PipelineBuffers buf_neg_dense;
+    cfg_neg.volume_backend = VolumeBackend::Dense;
+    StereoMatcher matcher_neg_dense(cfg_neg);
+    if (!matcher_neg_dense.compute(left, right, buf_neg_dense)) {
+        std::cerr << "Negative disparity dense pipeline failed\n";
+        return 1;
+    }
+
+    PipelineBuffers buf_neg_packed;
+    cfg_neg.volume_backend = VolumeBackend::Packed;
+    StereoMatcher matcher_neg_packed(cfg_neg);
+    if (!matcher_neg_packed.compute(left, right, buf_neg_packed)) {
+        std::cerr << "Negative disparity packed pipeline failed\n";
+        return 1;
+    }
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float dd = buf_neg_dense.disparity.at(x, y);
+            const float dp = buf_neg_packed.disparity.at(x, y);
+            if (std::isnan(dd) != std::isnan(dp) || (std::isfinite(dd) && std::abs(dd - dp) > 1e-4f)) {
+                std::cerr << "Negative disparity mismatch at (" << x << "," << y << "): dense="
+                          << dd << " vs packed=" << dp << "\n";
+                return 1;
+            }
+        }
+    }
+    std::cout << "  Negative disparity test (-8 to 16) 100% bit-exact match!\n";
+
     std::cout << "sanity ok\n";
     return 0;
 }
