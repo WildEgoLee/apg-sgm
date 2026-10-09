@@ -3,6 +3,7 @@
 
 #include <immintrin.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <utility>
 #include <vector>
@@ -256,23 +257,51 @@ void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gr
             }
         }
     } else if (dx == 0 && dy == 1) {
+        constexpr int kVerticalTileX = 16;
+        const int num_blocks = (w + kVerticalTileX - 1) / kVerticalTileX;
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel for schedule(dynamic, 1)
 #endif
-        for (int x = 0; x < w; ++x) {
-            PathState prev, cur;
+        for (int bi = 0; bi < num_blocks; ++bi) {
+            const int xb = bi * kVerticalTileX;
+            const int xe = std::min(xb + kVerticalTileX, w);
+            const int nb = xe - xb;
+
+            std::array<PathState, kVerticalTileX> prev;
+            std::array<PathState, kVerticalTileX> cur;
+
             for (int y = 0; y < h; ++y) {
-                process_pixel_packed_avx2<TAcc, Mode>(x, y, y > 0, x, y - 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+                const bool has_prev = (y > 0);
+                const int py = y - 1;
+                for (int i = 0; i < nb; ++i) {
+                    const int x = xb + i;
+                    process_pixel_packed_avx2<TAcc, Mode>(
+                        x, y, has_prev, x, py, P1, cfg.sgm, gray, base, acc, prev[i], cur[i]);
+                }
             }
         }
     } else if (dx == 0 && dy == -1) {
+        constexpr int kVerticalTileX = 16;
+        const int num_blocks = (w + kVerticalTileX - 1) / kVerticalTileX;
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel for schedule(dynamic, 1)
 #endif
-        for (int x = 0; x < w; ++x) {
-            PathState prev, cur;
+        for (int bi = 0; bi < num_blocks; ++bi) {
+            const int xb = bi * kVerticalTileX;
+            const int xe = std::min(xb + kVerticalTileX, w);
+            const int nb = xe - xb;
+
+            std::array<PathState, kVerticalTileX> prev;
+            std::array<PathState, kVerticalTileX> cur;
+
             for (int y = h - 1; y >= 0; --y) {
-                process_pixel_packed_avx2<TAcc, Mode>(x, y, y + 1 < h, x, y + 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+                const bool has_prev = (y + 1 < h);
+                const int py = y + 1;
+                for (int i = 0; i < nb; ++i) {
+                    const int x = xb + i;
+                    process_pixel_packed_avx2<TAcc, Mode>(
+                        x, y, has_prev, x, py, P1, cfg.sgm, gray, base, acc, prev[i], cur[i]);
+                }
             }
         }
     } else {
