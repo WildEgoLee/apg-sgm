@@ -19,6 +19,9 @@ jobs:
           - os: ubuntu-latest
             compiler: clang
             cxx: clang++
+          - os: windows-latest
+            compiler: msvc
+            cxx: cl
 
     steps:
       - name: Checkout code
@@ -30,11 +33,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build libomp-dev
 
-      - name: Configure CMake
+      - name: Configure CMake (Linux)
+        if: runner.os == 'Linux'
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cmake -B build
 
       - name: Build
         run: |
@@ -45,8 +54,14 @@ jobs:
           ctest --test-dir build -C Release --output-on-failure
 
       - name: Run Benchmark Smoke Test
+        shell: bash
         run: |
-          python3 tools/prepare_dataset.py --synthetic
-          ./build/apg-benchmark --manifest benchmarks/manifests/synthetic.txt --output results/test_ci.csv --warmup 0 --repeat 1
-          ./build/apg-benchmark --manifest benchmarks/manifests/synthetic.txt --backend packed --output results/test_packed_ci.csv --warmup 0 --repeat 1
-          ./build/apg-benchmark --manifest benchmarks/manifests/synthetic.txt --modes E --verify-backends
+          python3 tools/prepare_dataset.py --synthetic || python tools/prepare_dataset.py --synthetic
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            BENCH_EXE="./build/Release/apg-benchmark.exe"
+          else
+            BENCH_EXE="./build/apg-benchmark"
+          fi
+          $BENCH_EXE --manifest benchmarks/manifests/synthetic.txt --output results/test_ci.csv --warmup 0 --repeat 1
+          $BENCH_EXE --manifest benchmarks/manifests/synthetic.txt --backend packed --output results/test_packed_ci.csv --warmup 0 --repeat 1
+          $BENCH_EXE --manifest benchmarks/manifests/synthetic.txt --modes E --verify-backends

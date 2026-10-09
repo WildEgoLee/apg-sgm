@@ -417,6 +417,97 @@ Before introducing kernel modifications to `Refiner`, profiling on full-resoluti
 6. **Other (Aux, WTA, Conf, Post)**: ~3.43 s (**9.54%**)
 
 - **CI**: Ubuntu GCC and Clang builds, CTest, and smoke checks passed (Run 36225322417).
-- **Next Steps Decision**:
-  - **Option A (P3.4c)**: Refine candidate deduplication (evaluate skipping ~32% redundant `local_cost()` calls while strictly preserving `std::mt19937` call positions). Potential gain: ~0.8s pooled (~2.2% pipeline).
-  - **Option B (P3.5)**: Packed SGM AVX2 SIMD / 8-path recurrence vectorization. Targets the dominant 44.84% macro bottleneck.
+
+---
+
+### P3.4c: Refine Candidate Deduplication Evaluation (REJECTED)
+
+- **Status**: **REJECTED** (Preserved in branch `codex/p3-4c-refine-candidate-dedup`)
+- **Baseline**: `519a2ce` (P3.4b merge on main)
+- **Scope**:
+  1. Profiled candidate deduplication inside `Refiner::refine()` on unreliable pixels before calling `local_cost()`.
+  2. Strictly preserved candidate generation order and `std::uniform_int_distribution` RNG calls.
+  3. Pre-checked duplicate candidate disparities in small stack array before evaluating `local_cost()`.
+- **Merge Gate Criteria**:
+  - Parity: 100% bit-exact across non-timing metrics and dual backend tests.
+  - Refine Stage Speedup Geomean $\ge 1.20\times$.
+  - Pipeline Speedup Geomean $\ge 1.015\times$.
+  - No regression $< 0.995\times$.
+- **Results**:
+  - Non-timing parity: 100% bit-exact (888/888 fields checked).
+  - Dual backend parity: 100% passed (E and G modes).
+  - Refine Stage Speedup: ArtL 1.068x (-20.8 ms), Piano 1.063x (-65.0 ms), Vintage 0.995x (+5.6 ms).
+  - **Refine Geomean Speedup**: **1.0415x** (Gate: $\ge 1.20\times$ -> **FAIL**).
+  - Pooled Refine Stage Reduction: Only -80.15 ms across 3 full-res scenes (2597.51 ms down to 2517.36 ms).
+- **Decision & Attribution**:
+  Following P3.4b LUT optimization, `local_cost()` was already transformed into 3 fast array lookups; remaining Refine runtime is dominated by work buffer memory access, boundary checks, and loop iteration overhead. Skipping 32% of calls yielded only ~3.1% stage speedup, failing the 1.20x gate. As planned, the change was rejected without micro-tuning to keep `main` clean.
+
+---
+
+## V3 Priority 5: Packed SGM SIMD Vectorization Track (P3.5)
+
+### P3.5a: SGM Feasibility Attribution & Interior Profiling
+
+Before implementing SIMD kernels, a comprehensive profiler (`scratch/profile_packed_simd_feasibility.cpp`) evaluated all 8 SGM paths across Middlebury 2014 full-resolution F scenes (`ArtL`, `Piano`, `Vintage`, G-mode, 16T):
+- **Workload**: 100.19 million path-pixels, 34.74 billion disparity evaluations.
+- **Disparity Range ($D_c$)**: Mean = 346.72, Median = 272, Max = 768.
+- **Neighbor Stepping Stability**: 92.96% of adjacent path pixels have identical $d_{min}$ ($\Delta dmin == 0$), and 95.59% have $|\Delta dmin| \le 1$.
+- **SIMD Interior Coverage**:
+  - Overlap coverage $[dmin_c, dmax_c) \cap [dmin_p, dmax_p)$: **99.05%**.
+  - Interior condition ($d-1, d, d+1$ all within previous range): **98.56%** of all evaluations.
+  - **8-lane AVX2 SIMD Vectorizable Proportion**: **97.20%** (Cardinal: 97.39%, Diagonal: 97.02%).
+  - Vector tail (<8 remainder): only 1.36%.
+  - Boundary scalar edges: only 1.44%.
+
+**Conclusion**: The ragged disparity structure does not fragment vectorization. 97.20% of the SGM recurrence work falls directly into 8-lane contiguous SIMD blocks.
+
+---
+
+### P3.5b & P3.5c: Packed SGM AVX2 Recurrence, Runtime Dispatch & MSVC CI
+
+- **Scope**:
+  1. **AVX2 Recurrence Kernel** (`src/sgm_optimizer_avx2.cpp`):
+     - Scalar prefix for boundary disparity lanes.
+     - 8-lane AVX2 interior loop using contiguous unaligned vector loads (`_mm256_loadu_si256` for `prev[d-1]`, `prev[d]`, `prev[d+1]`), zero-extension unpacking for `uint16_t` cost (`_mm256_cvtepu16_epi32`), integer min chain, and invalid cost blending (`_mm256_blendv_epi8`).
+     - Scalar suffix handling remaining tail and right boundary lanes.
+     - Fully integer-arithmetic formulation ensuring 100% bit-exact equivalence with golden scalar reference.
+  2. **Isolated Verification**:
+     - 50,000 randomized synthetic test cases verified 100% bit-exact parity between AVX2 and scalar kernels.
+     - Isolated kernel throughput jumped from 0.41 G-disp/s to 2.64 G-disp/s (**6.47x isolated speedup**).
+  3. **Architecture & Runtime Dispatch** (`src/cpu_features.hpp`, `src/sgm_common.hpp`):
+     - AVX2 kernel isolated into dedicated translation unit `src/sgm_optimizer_avx2.cpp`.
+     - `CMakeLists.txt` sets `/arch:AVX2` (MSVC) and `-mavx2` (GCC/Clang) only on `sgm_optimizer_avx2.cpp`. The rest of `apg_sgm` remains completely scalar and portable.
+     - Runtime CPU feature detection via `detail::is_avx2_supported()`, with automatic fallback to golden scalar path.
+  4. **CI Matrix Expansion**:
+     - Updated `.github/workflows/ci.yml` to include `windows-latest + MSVC` runner alongside Ubuntu GCC and Clang.
+
+#### Performance Results (16 Threads, G-mode, Middlebury 2014 Full-Res F)
+
+| Scene | P3.4b SGM (ms) | P3.5b SGM (ms) | SGM Speedup | P3.4b Pipeline (ms) | P3.5b Pipeline (ms) | Pipeline Speedup | Bit-Exact |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **ArtL (F)** | 1189.02 ms | 922.22 ms | **1.289x** (-266.8 ms) | 2751.30 ms | 2470.19 ms | **1.114x** (10.2% faster) | 100% (888/888) |
+| **Piano (F)** | 4485.19 ms | 3541.36 ms | **1.267x** (-943.8 ms) | 10547.91 ms | 9457.71 ms | **1.115x** (10.3% faster) | 100% (888/888) |
+| **Vintage (F)** | 10456.25 ms | 8518.56 ms | **1.227x** (-1937.7 ms) | 22672.12 ms | 20406.93 ms | **1.111x** (10.0% faster) | 100% (888/888) |
+| **Scene-Balanced Geomean** | — | — | **1.2608x** | — | — | **1.1134x** | **PASS** |
+| **Pooled Total Sum** | 16130.46 ms | 12982.14 ms | **1.2425x** (-3148.3 ms) | 35971.33 ms | 32334.83 ms | **1.1125x** (-3636.5 ms) | **PASS** |
+
+#### Cumulative Pipeline Progress (P3.0 Baseline `2ad6d26` -> Post-P3.5b)
+
+| Milestone | Pooled Pipeline Time (3 Scenes) | Delta vs Prior | Cumulative Speedup vs P3.0 |
+| :--- | :---: | :---: | :---: |
+| **P3.0 Initial Baseline** (`2ad6d26`) | 59.808 s | — | 1.000x |
+| **P3.2b Post-Cross** (`79ed6ac`) | 45.027 s | -14.781 s | 1.316x |
+| **P3.3c Post-Cost** (`ad4ee3f`) | 37.905 s | -7.122 s | 1.557x |
+| **P3.4b Post-Refine LUT** (`a215d2e`) | 35.971 s | -1.933 s | 1.647x |
+| **P3.5b Post-SGM AVX2** | **32.335 s** | **-3.637 s** | **1.850x** |
+
+**Net execution time saved**: **-27.473 seconds per full-res F run** (45.9% end-to-end reduction vs P3.0).
+
+#### Updated Post-P3.5 Pipeline Stage Distribution (32.33 s Pooled)
+
+1. **SGM**: ~12.98 s (**40.15%**) — Reduced from 44.84% (saved 3.15s pooled)
+2. **Cross**: ~7.40 s (**22.89%**) — Now dominant secondary bottleneck
+3. **Cost**: ~3.56 s (**11.01%**)
+4. **Refine**: ~2.67 s (**8.26%**)
+5. **Prior**: ~2.30 s (**7.11%**)
+6. **Other (Aux, WTA, Conf, Post)**: ~3.42 s (**10.58%**)

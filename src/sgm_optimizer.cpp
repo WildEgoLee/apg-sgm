@@ -1,4 +1,7 @@
 #include "apg_sgm/sgm_optimizer.hpp"
+#include "sgm_common.hpp"
+#include "cpu_features.hpp"
+#include "sgm_optimizer_avx2.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,21 +13,8 @@ namespace apg {
 
 namespace {
 
-int adaptive_p2(const SgmParams& p, int dI) {
-    dI = std::abs(dI);
-    int P2 = p.P2_base;
-    if (!p.adaptive_penalties) {
-        return std::max(P2, p.P1 + 1);
-    }
-    if (p.piecewise_p2) {
-        if (dI >= p.grad_t2) P2 = p.P2_base / 4;
-        else if (dI >= p.grad_t1) P2 = p.P2_base / 2;
-        else P2 = p.P2_base;
-    } else {
-        P2 = static_cast<int>(p.P2_base / (1.f + p.p2_alpha * static_cast<float>(dI)) + 0.5f);
-    }
-    return std::max(P2, p.P1 + 1);
-}
+using detail::adaptive_p2;
+using detail::PathState;
 
 inline void process_pixel(int x, int y, bool has_prev, int px, int py,
                           int D, int P1, const SgmParams& sgm_cfg,
@@ -87,13 +77,6 @@ inline void process_pixel(int x, int y, bool has_prev, int px, int py,
     }
     prev = cur;
 }
-
-struct PathState {
-    int dmin = 0;
-    int dmax = 0;
-    int min_val = kPathInf;
-    std::vector<int> vals;
-};
 
 inline void process_pixel_packed(int x, int y, bool has_prev, int px, int py,
                                  int P1, const SgmParams& sgm_cfg,
@@ -392,9 +375,14 @@ void SgmOptimizer::optimize_packed(const PipelineConfig& cfg, const Image8& gray
 
     const int dirs[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
     const int npath = (cfg.sgm.paths == PathType::Path8) ? 8 : 4;
+    const bool use_avx2 = detail::is_avx2_supported();
 
     for (int p = 0; p < npath; ++p) {
-        aggregate_path_packed(cfg, gray, packed_cost, packed_cost32, dirs[p][0], dirs[p][1]);
+        if (use_avx2) {
+            detail::aggregate_path_packed_avx2(cfg, gray, packed_cost, packed_cost32, dirs[p][0], dirs[p][1]);
+        } else {
+            aggregate_path_packed(cfg, gray, packed_cost, packed_cost32, dirs[p][0], dirs[p][1]);
+        }
     }
 }
 
