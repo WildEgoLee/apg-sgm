@@ -21,6 +21,7 @@ add_library(apg_sgm
     src/sgm_optimizer_avx2.cpp
     src/confidence_estimator.cpp
     src/refiner.cpp
+    src/refiner_avx2.cpp
     src/postprocess.cpp
     src/pipeline.cpp
     src/ablation.cpp
@@ -36,10 +37,10 @@ endif()
 
 if(MSVC)
     target_compile_options(apg_sgm PRIVATE /W4)
-    set_source_files_properties(src/sgm_optimizer_avx2.cpp src/cost_aggregator_avx2.cpp src/cost_computer_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    set_source_files_properties(src/sgm_optimizer_avx2.cpp src/cost_aggregator_avx2.cpp src/cost_computer_avx2.cpp src/refiner_avx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 else()
     target_compile_options(apg_sgm PRIVATE -Wall -Wextra -Wpedantic)
-    set_source_files_properties(src/sgm_optimizer_avx2.cpp src/cost_aggregator_avx2.cpp src/cost_computer_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+    set_source_files_properties(src/sgm_optimizer_avx2.cpp src/cost_aggregator_avx2.cpp src/cost_computer_avx2.cpp src/refiner_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
 endif()
 
 add_executable(apg-stereo apps/run_stereo.cpp)
@@ -50,6 +51,7 @@ target_link_libraries(apg-benchmark PRIVATE apg_sgm)
 
 enable_testing()
 add_executable(apg_sgm_tests tests/test_sanity.cpp)
+target_include_directories(apg_sgm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(apg_sgm_tests PRIVATE apg_sgm)
 add_test(NAME sanity COMMAND apg_sgm_tests)
 

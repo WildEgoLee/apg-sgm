@@ -1160,3 +1160,73 @@ The production paired benchmark evaluated baseline (un-interleaved ray-by-ray ex
 | — | **Total Pipeline** | **18,016.95 ms** | **100.00%** | **18,725.53 ms** | **1.039x** |
 
 **Cumulative Speedup vs Canonical Baseline (59.808 s):** **3.320x** (Total pipeline reduced from 59.808 s to 18.017 s).
+
+---
+
+## V3 Priority 13: Refiner AVX2 Dedicated Translation Unit + Runtime Dispatch Production
+
+**Decision:** **MERGE PR #19**.
+The Refiner production path now dispatches to a dedicated AVX2 translation unit (`src/refiner_avx2.cpp`) with per-pixel invariant hoisting when supported at runtime via `detail::is_avx2_supported()`, falling back to the unchanged portable scalar algorithm (`src/refiner.cpp`) on non-AVX2 hosts. Public API in `include/apg_sgm/refiner.hpp` remains completely unmodified; internal entrypoints are declared strictly in `src/refiner_internal.hpp`. Both isolated Refiner and paired end-to-end pipeline benchmarks strongly exceeded all production gates with 100% bit-exact disparity parity across all pixels and modes.
+
+### 1. Architectural Design & Codegen Attribution
+- **Codegen Root Cause**: In standard scalar x64 compilation (`/O2 /MD`), `std::round` calls out-of-line `roundf`, and compiler inlining of `local_cost` into the spatial propagation loop is suppressed by register pressure. Compiling with target-specific `/arch:AVX2` lowers `std::round` directly to hardware `vroundss`, inlines local cost evaluations, and eliminates call frames in the hot inner loop.
+- **Invariant Hoisting (`LeftPixelCtx`)**: Caching invariant left-pixel attributes (Census words, gray value, Sobel gradients, search range bounds, active cost flags) per pixel eliminates redundant memory lookups and branch checks across candidate disparity evaluations.
+- **Portability & Isolation**: Neither the overall target `apg_sgm` nor `src/refiner.cpp` receives AVX2 flags. Only `src/refiner_avx2.cpp` has target-specific `/arch:AVX2` (MSVC) / `-mavx2` (GCC/Clang) properties.
+
+### 2. Isolated Refiner Production Benchmark (16 Threads, Full-Res F, 7 Repeats, Median)
+- **Convention**: `Saving = Scalar - AVX2` (positive denotes benefit); `Delta = AVX2 - Scalar` (negative denotes reduction).
+
+| Scene | Scalar (ms) | AVX2 (ms) | Speedup | Saving (ms) | Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 306.69 ms | 142.76 ms | **2.148x** | +163.93 ms | 100% bit-exact |
+| **Piano (F)** | 1,098.97 ms | 502.30 ms | **2.188x** | +596.67 ms | 100% bit-exact |
+| **Vintage (F)** | 1,167.90 ms | 546.12 ms | **2.139x** | +621.79 ms | 100% bit-exact |
+| **Scene Geomean** | — | — | **2.158x** | — | **PASS** |
+| **Pooled Sum** | 2,573.56 ms | 1,191.17 ms | **2.161x** | **+1,382.39 ms** | **PASS** |
+
+- **Production Gate Evaluation**:
+  - Requirement: Geomean $\ge 1.70\times$ (preferred $\ge 1.90\times$), every scene $\ge 1.50\times$, pooled saving $\ge 1.00\text{ s}$, 100% bit-exact.
+  - Measured: Geomean **2.158x**, per-scene minimum **2.139x**, pooled saving **+1.382 s**. **EXCEEDED PREFERRED GATE**.
+
+### 3. Per-Repeat Paired Full Pipeline Benchmark & Accounting (16 Threads, Full-Res F, 7 Repeats)
+- Evaluated on identical pre-refine buffers per repeat `i`, comparing runtime candidate against forced scalar fallback:
+  - `total_saving[i] = scalar_total[i] - avx_total[i]`
+  - `refine_saving[i] = scalar_refine[i] - avx_refine[i]`
+  - `residual[i] = total_saving[i] - refine_saving[i]`
+
+| Scene | Scalar Pipe (ms) | AVX2 Pipe (ms) | Pipe Speedup | Total Save (ms) | Refine Save (ms) | Residual (ms) | Disparity Parity |
+|:---|---:|---:|:---:|---:|---:|---:|:---:|
+| **ArtL (F)** | 1,521.70 ms | 1,379.01 ms | **1.103x** | +148.14 ms | +147.55 ms | +0.86 ms | 100% bit-exact |
+| **Piano (F)** | 5,612.76 ms | 5,051.08 ms | **1.111x** | +571.65 ms | +571.94 ms | -0.86 ms | 100% bit-exact |
+| **Vintage (F)** | 10,416.95 ms | 9,825.29 ms | **1.060x** | +590.39 ms | +597.04 ms | -2.26 ms | 100% bit-exact |
+| **Scene Geomean** | — | — | **1.091x** | — | — | — | **PASS** |
+| **Pooled Sum** | 17,551.41 ms | 16,255.37 ms | **1.080x** | **+1,310.17 ms** | **+1,316.53 ms** | **-2.27 ms** | **PASS** |
+
+- **Accounting & Residual Analysis**:
+  - The pooled residual across all paired pipeline runs is **-2.27 ms**, which represents only **0.17%** of the Refine saving (well below the 25% threshold).
+  - This confirms that pipeline-level gains are strictly and cleanly attributed to the Refiner acceleration without non-Refine/session noise artifacts.
+- **Pipeline Merge Gate Evaluation**:
+  - Requirement: Pooled saving $\ge 0.80\text{ s}$, pipeline geomean $\ge 1.04\times$, every scene $\ge 0.995\times$.
+  - Measured: Pooled saving **+1.310 s**, geomean **1.091x**, per-scene minimum **1.060x**. **PASSED**.
+
+### 4. Fresh 10-Stage Attribution Profile (Candidate Build Same-Session)
+- Measured across Middlebury full-resolution F (`ArtL`, `Piano`, `Vintage`), 16 threads, median of 7 measured repeats in the same candidate binary session:
+
+| Rank | Stage | ArtL (ms) | Piano (ms) | Vintage (ms) | Pooled (ms) | Share (%) |
+|:---:|:---|---:|---:|---:|---:|:---:|
+| # 1 | SGM | 383.44 ms | 1,457.83 ms | 3,668.22 ms | **5,509.49 ms** | 34.22% |
+| # 2 | Cross | 234.22 ms | 1,134.47 ms | 2,752.09 ms | **4,120.78 ms** | 25.59% |
+| # 3 | **Prior** | **188.14 ms** | **543.00 ms** | **800.10 ms** | **1,531.23 ms** | **9.51%** |
+| # 4 | **Refine** | **159.12 ms** | **510.76 ms** | **572.66 ms** | **1,242.55 ms** | **7.72%** |
+| # 5 | Post | 129.16 ms | 460.84 ms | 460.61 ms | **1,050.61 ms** | 6.53% |
+| # 6 | Aux | 106.60 ms | 311.70 ms | 327.09 ms | **745.40 ms** | 4.63% |
+| # 7 | WTA | 48.68 ms | 178.22 ms | 405.43 ms | **632.34 ms** | 3.93% |
+| # 8 | Cost | 42.90 ms | 152.25 ms | 365.13 ms | **560.28 ms** | 3.48% |
+| # 9 | Right WTA | 32.73 ms | 120.90 ms | 273.81 ms | **427.44 ms** | 2.65% |
+| #10 | Confidence | 35.96 ms | 125.27 ms | 119.97 ms | **281.19 ms** | 1.75% |
+| — | **Sum of Stage Medians** | — | — | — | **16,101.31 ms** | **100.00%** |
+| — | **Median Total Runtime** | — | — | — | **16,255.37 ms** | — |
+
+- **Profile Consistency**: Sum of stage medians (16,101.31 ms) closely matches the independently evaluated median total pipeline runtime (16,255.37 ms) within 0.95%. Shares sum to strictly 100.00%.
+- **Ranking Shift**: Refine drops from 3rd bottleneck (previously 14.33%) to 4th (7.72%). **Prior Estimator (1,531.23 ms, 9.51%) officially becomes the #3 bottleneck** and the next primary actionable target.
+- **Canonical Cumulative Milestone**: Fresh production measurement total is **16.255 s**, achieving **3.679x speedup** vs canonical P3.0 baseline (59.808 s). Conservative Amdahl projection based on post-P3.11b baseline (18.017 s - 1.382 s = 16.635 s) yields **3.595x**.

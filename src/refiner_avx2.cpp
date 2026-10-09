@@ -1,35 +1,48 @@
-#include "apg_sgm/refiner.hpp"
+#include "refiner_avx2.hpp"
 #include "apg_sgm/cost_computer.hpp"
-#include "cpu_features.hpp"
 #include "discrete_cost_lut.hpp"
-#include "refiner_internal.hpp"
 
 #include <cmath>
 #include <random>
 
-namespace apg {
+namespace apg::detail {
 
 namespace {
 
-float local_cost(const PipelineConfig& cfg, const PipelineBuffers& buf, const detail::DiscreteCostLut& lut, int x, int y, int d) {
-    const int w = buf.left_gray.width();
-    const int xr = x - d;
-    const int lo = buf.range.dmin.at(x, y);
-    const int hi = buf.range.dmax.at(x, y);
-    if (xr < 0 || xr >= w || d < lo || d >= hi) return 1e6f;
-    const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
-    const int pop = sym ? CostComputer::popcount32(buf.census_left[y * w + x] ^ buf.census_right[y * w + xr])
-                        : CostComputer::popcount64(buf.census_left64[y * w + x] ^ buf.census_right64[y * w + xr]);
+struct LeftPixelCtx {
+    int x;
+    int y;
+    int lo;
+    int hi;
+    int w;
+    uint32_t census32;
+    uint64_t census64;
+    int left_gray;
+    int left_gx;
+    int left_gy;
+};
+
+inline float local_cost_hoist(const PipelineConfig& cfg,
+                              const PipelineBuffers& buf,
+                              const detail::DiscreteCostLut& lut,
+                              const LeftPixelCtx& ctx,
+                              int d) {
+    if (d < ctx.lo || d >= ctx.hi) return 1e6f;
+    const int xr = ctx.x - d;
+    if (xr < 0 || xr >= ctx.w) return 1e6f;
+
+    const bool sym = (cfg.cost.census == CensusType::SymmetricCensus9x7);
+    const int pop = sym ? CostComputer::popcount32(ctx.census32 ^ buf.census_right[ctx.y * ctx.w + xr])
+                        : CostComputer::popcount64(ctx.census64 ^ buf.census_right64[ctx.y * ctx.w + xr]);
     float c = lut.census[pop];
     if (cfg.cost.use_ad) {
-        const int ad = std::abs(static_cast<int>(buf.left_gray.at(x, y)) -
-                                static_cast<int>(buf.right_gray.at(xr, y)));
+        const int ad = std::abs(ctx.left_gray - static_cast<int>(buf.right_gray.at(xr, ctx.y)));
         c += lut.ad[ad];
     }
     if (cfg.cost.use_grad) {
         const int g =
-            std::abs(static_cast<int>(buf.left_gx.at(x, y)) - static_cast<int>(buf.right_gx.at(xr, y))) +
-            std::abs(static_cast<int>(buf.left_gy.at(x, y)) - static_cast<int>(buf.right_gy.at(xr, y)));
+            std::abs(ctx.left_gx - static_cast<int>(buf.right_gx.at(xr, ctx.y))) +
+            std::abs(ctx.left_gy - static_cast<int>(buf.right_gy.at(xr, ctx.y)));
         c += lut.grad[g];
     }
     return c;
@@ -37,15 +50,14 @@ float local_cost(const PipelineConfig& cfg, const PipelineBuffers& buf, const de
 
 } // namespace
 
-namespace detail {
-
-void refine_scalar(const PipelineConfig& cfg, PipelineBuffers& buf) {
+void refine_avx2(const PipelineConfig& cfg, PipelineBuffers& buf) {
     if (!cfg.refine.enable) return;
     const int w = buf.disparity.width();
     const int h = buf.disparity.height();
     std::mt19937 rng(12345);
 
     const detail::DiscreteCostLut lut(cfg);
+    const bool sym = (cfg.cost.census == CensusType::SymmetricCensus9x7);
 
     Image32f work = buf.disparity;
     for (int it = 0; it < cfg.refine.iterations; ++it) {
@@ -83,10 +95,30 @@ void refine_scalar(const PipelineConfig& cfg, PipelineBuffers& buf) {
                 }
                 if (cur >= 0.f) push(cur + static_cast<float>(dist(rng)));
 
+                LeftPixelCtx ctx;
+                ctx.x = x;
+                ctx.y = y;
+                ctx.lo = lo;
+                ctx.hi = hi;
+                ctx.w = w;
+                const size_t left_idx = static_cast<size_t>(y) * w + x;
+                if (sym) {
+                    ctx.census32 = buf.census_left[left_idx];
+                } else {
+                    ctx.census64 = buf.census_left64[left_idx];
+                }
+                if (cfg.cost.use_ad) {
+                    ctx.left_gray = static_cast<int>(buf.left_gray.at(x, y));
+                }
+                if (cfg.cost.use_grad) {
+                    ctx.left_gx = static_cast<int>(buf.left_gx.at(x, y));
+                    ctx.left_gy = static_cast<int>(buf.left_gy.at(x, y));
+                }
+
                 float best_c = 1e9f;
                 int best_d = (cur >= 0.f) ? clampi(static_cast<int>(std::round(cur)), lo, hi - 1) : lo;
                 for (int i = 0; i < n; ++i) {
-                    const float c = local_cost(cfg, buf, lut, x, y, candidates[i]);
+                    const float c = local_cost_hoist(cfg, buf, lut, ctx, candidates[i]);
                     if (c < best_c) {
                         best_c = c;
                         best_d = candidates[i];
@@ -99,15 +131,4 @@ void refine_scalar(const PipelineConfig& cfg, PipelineBuffers& buf) {
     buf.disparity = std::move(work);
 }
 
-} // namespace detail
-
-void Refiner::refine(const PipelineConfig& cfg, PipelineBuffers& buf) const {
-    if (!cfg.refine.enable) return;
-    if (detail::is_avx2_supported()) {
-        detail::refine_avx2(cfg, buf);
-        return;
-    }
-    detail::refine_scalar(cfg, buf);
-}
-
-} // namespace apg
+} // namespace apg::detail
