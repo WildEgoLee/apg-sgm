@@ -503,11 +503,23 @@ Before implementing SIMD kernels, a comprehensive profiler (`scratch/profile_pac
 
 **Net execution time saved**: **-27.473 seconds per full-res F run** (45.9% end-to-end reduction vs P3.0).
 
-#### Updated Post-P3.5 Pipeline Stage Distribution (32.33 s Pooled)
+#### Comprehensive Post-P3.5 10-Stage Pipeline Attribution (32.33 s Pooled)
 
-1. **SGM**: ~12.98 s (**40.15%**) — Reduced from 44.84% (saved 3.15s pooled)
-2. **Cross**: ~7.40 s (**22.89%**) — Now dominant secondary bottleneck
-3. **Cost**: ~3.56 s (**11.01%**)
-4. **Refine**: ~2.67 s (**8.26%**)
-5. **Prior**: ~2.30 s (**7.11%**)
-6. **Other (Aux, WTA, Conf, Post)**: ~3.42 s (**10.58%**)
+| Rank | Stage | ArtL (ms) | Piano (ms) | Vintage (ms) | Pooled Total (ms) | Share (%) | Status & Bottleneck Role |
+|:---:|:---|---:|---:|---:|---:|---:|:---|
+| **#1** | **SGM** | 922.22 ms | 3541.36 ms | 8518.56 ms | **12,982.14 ms** | **40.15%** | Primary macro bottleneck (reduced from 44.84%) |
+| **#2** | **Cross** | 344.88 ms | 1872.90 ms | 5182.06 ms | **7,399.84 ms** | **22.89%** | **Dominant secondary bottleneck** (4.9x larger than Prior) |
+| **#3** | **Cost** | 244.90 ms | 930.72 ms | 2383.09 ms | **3,558.71 ms** | **11.01%** | Stabilized (P3.3 Discrete LUT) |
+| **#4** | **Refine** | 329.01 ms | 1128.65 ms | 1217.44 ms | **2,675.10 ms** | **8.27%** | Stabilized (P3.4b Discrete LUT) |
+| **#5** | **Prior** | 194.19 ms | 529.39 ms | 779.54 ms | **1,503.12 ms** | **4.65%** | Secondary tail stage |
+| **#6** | **Right WTA** | 90.88 ms | 332.99 ms | 972.15 ms | **1,396.02 ms** | **4.32%** | Secondary tail stage |
+| **#7** | **Post** | 136.18 ms | 468.75 ms | 485.46 ms | **1,090.39 ms** | **3.37%** | Tail post-processing |
+| **#8** | **Aux** | 89.89 ms | 290.13 ms | 309.36 ms | **689.38 ms** | **2.13%** | Gray/gradient auxiliary setup |
+| **#9** | **WTA** | 47.69 ms | 174.21 ms | 412.49 ms | **634.39 ms** | **1.96%** | Minor tail stage |
+| **#10** | **Confidence**| 36.79 ms | 127.65 ms | 127.98 ms | **292.42 ms** | **0.90%** | Minor tail stage |
+| — | **Pipeline Total** | **2470.19 ms** | **9457.71 ms** | **20406.93 ms** | **32,334.83 ms** | **100.00%** | End-to-end full-res F pipeline |
+
+> [!NOTE]
+> Stage medians are independently aggregated across 4 runs and therefore do not sum exactly to the median end-to-end pipeline time (sum of stage medians = 32,221.51 ms vs pipeline median total = 32,334.83 ms, delta = 113.32 ms / 0.35%).
+> 
+> **Bottleneck Focus for P3.7**: Cross (22.89%, 7.40s) is overwhelmingly the next target. In the Cross aggregation query loops (both horizontal and vertical passes), each valid packed state evaluates a 32-bit unsigned division (`dst[di] = static_cast<uint16_t>(acc / cnt)` where `cnt` is bounded by `2 * max_arm_length + 1 = 35`). Across the 3 full-resolution scenes, this represents approximately 8.7 billion 32-bit unsigned variable-denominator division operations across horizontal and vertical passes combined. AVX2 has no native general integer vector division instruction, which naturally prevents auto-vectorization of the query loop. P3.7a will conduct micro-attribution across Cross sub-phases (arms, workspace allocation, H-prefix, H-query, V-prefix, V-query) to guide vectorization.
