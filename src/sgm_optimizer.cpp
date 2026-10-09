@@ -4,6 +4,7 @@
 #include "sgm_optimizer_avx2.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <utility>
@@ -78,11 +79,11 @@ inline void process_pixel(int x, int y, bool has_prev, int px, int py,
     prev = cur;
 }
 
-template <detail::AccumulateMode Mode>
+template <typename TAcc, detail::AccumulateMode Mode>
 inline void process_pixel_packed(int x, int y, bool has_prev, int px, int py,
                                  int P1, const SgmParams& sgm_cfg,
                                  const Image8& gray, const PackedCostVolume16& base,
-                                 PackedCostVolume32& acc,
+                                 PackedCostVolume<TAcc>& acc,
                                  PathState& prev, PathState& cur) {
     const int dmin_c = base.dmin(x, y);
     const int dmax_c = base.dmax(x, y);
@@ -98,23 +99,24 @@ inline void process_pixel_packed(int x, int y, bool has_prev, int px, int py,
     }
 
     const uint16_t* c = base.slice(x, y);
-    uint32_t* a = acc.slice(x, y);
+    TAcc* a = acc.slice(x, y);
+    const TAcc inv_acc = invalid_cost<TAcc>();
 
     if (!has_prev || prev.vals.empty()) {
         for (int di = 0; di < D_c; ++di) {
             if (c[di] == kInvalidCost) {
                 cur.vals[di] = kPathInf;
-                a[di] = kInvalidCost32;
+                a[di] = inv_acc;
             } else {
                 cur.vals[di] = static_cast<int>(c[di]);
                 if (cur.vals[di] < cur.min_val) {
                     cur.min_val = cur.vals[di];
                 }
                 if constexpr (Mode == detail::AccumulateMode::Overwrite) {
-                    a[di] = static_cast<uint32_t>(cur.vals[di]);
+                    a[di] = static_cast<TAcc>(cur.vals[di]);
                 } else {
-                    if (a[di] != kInvalidCost32) {
-                        a[di] += static_cast<uint32_t>(cur.vals[di]);
+                    if (a[di] != inv_acc) {
+                        a[di] += static_cast<TAcc>(cur.vals[di]);
                     }
                 }
             }
@@ -135,7 +137,7 @@ inline void process_pixel_packed(int x, int y, bool has_prev, int px, int py,
         const bool valid_cur = (c[di] != kInvalidCost);
         if (!valid_cur) {
             cur.vals[di] = kPathInf;
-            a[di] = kInvalidCost32;
+            a[di] = inv_acc;
             continue;
         }
 
@@ -168,10 +170,10 @@ inline void process_pixel_packed(int x, int y, bool has_prev, int px, int py,
         }
 
         if constexpr (Mode == detail::AccumulateMode::Overwrite) {
-            a[di] = static_cast<uint32_t>(cur.vals[di]);
+            a[di] = static_cast<TAcc>(cur.vals[di]);
         } else {
-            if (a[di] != kInvalidCost32) {
-                a[di] += static_cast<uint32_t>(cur.vals[di]);
+            if (a[di] != inv_acc) {
+                a[di] += static_cast<TAcc>(cur.vals[di]);
             }
         }
     }
@@ -270,10 +272,10 @@ void SgmOptimizer::optimize(const PipelineConfig& cfg, PipelineBuffers& buf) con
     }
 }
 
-template <detail::AccumulateMode Mode = detail::AccumulateMode::Add>
+template <typename TAcc, detail::AccumulateMode Mode = detail::AccumulateMode::Add>
 void aggregate_path_packed_impl(const PipelineConfig& cfg, const Image8& gray,
                                 const PackedCostVolume16& base,
-                                PackedCostVolume32& acc, int dx, int dy) {
+                                PackedCostVolume<TAcc>& acc, int dx, int dy) {
     const int w = base.width();
     const int h = base.height();
     const int P1 = cfg.sgm.P1;
@@ -285,7 +287,7 @@ void aggregate_path_packed_impl(const PipelineConfig& cfg, const Image8& gray,
         for (int y = 0; y < h; ++y) {
             PathState prev, cur;
             for (int x = 0; x < w; ++x) {
-                process_pixel_packed<Mode>(x, y, x > 0, x - 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed<TAcc, Mode>(x, y, x > 0, x - 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == -1 && dy == 0) {
@@ -295,7 +297,7 @@ void aggregate_path_packed_impl(const PipelineConfig& cfg, const Image8& gray,
         for (int y = 0; y < h; ++y) {
             PathState prev, cur;
             for (int x = w - 1; x >= 0; --x) {
-                process_pixel_packed<Mode>(x, y, x + 1 < w, x + 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed<TAcc, Mode>(x, y, x + 1 < w, x + 1, y, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == 0 && dy == 1) {
@@ -305,7 +307,7 @@ void aggregate_path_packed_impl(const PipelineConfig& cfg, const Image8& gray,
         for (int x = 0; x < w; ++x) {
             PathState prev, cur;
             for (int y = 0; y < h; ++y) {
-                process_pixel_packed<Mode>(x, y, y > 0, x, y - 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed<TAcc, Mode>(x, y, y > 0, x, y - 1, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else if (dx == 0 && dy == -1) {
@@ -315,7 +317,7 @@ void aggregate_path_packed_impl(const PipelineConfig& cfg, const Image8& gray,
         for (int x = 0; x < w; ++x) {
             PathState prev, cur;
             for (int y = h - 1; y >= 0; --y) {
-                process_pixel_packed<Mode>(x, y, y + 1 < h, x, y + 1, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed<TAcc, Mode>(x, y, y + 1 < h, x, y + 1, P1, cfg.sgm, gray, base, acc, prev, cur);
             }
         }
     } else {
@@ -363,7 +365,7 @@ void aggregate_path_packed_impl(const PipelineConfig& cfg, const Image8& gray,
             bool hp = false;
             int px = x, py = y;
             while (x >= 0 && x < w && y >= 0 && y < h) {
-                process_pixel_packed<Mode>(x, y, hp, px, py, P1, cfg.sgm, gray, base, acc, prev, cur);
+                process_pixel_packed<TAcc, Mode>(x, y, hp, px, py, P1, cfg.sgm, gray, base, acc, prev, cur);
                 hp = true;
                 px = x;
                 py = y;
@@ -374,17 +376,12 @@ void aggregate_path_packed_impl(const PipelineConfig& cfg, const Image8& gray,
     }
 }
 
-void SgmOptimizer::aggregate_path_packed(const PipelineConfig& cfg, const Image8& gray,
-                                         const PackedCostVolume16& base,
-                                         PackedCostVolume32& acc, int dx, int dy) const {
-    aggregate_path_packed_impl<detail::AccumulateMode::Add>(cfg, gray, base, acc, dx, dy);
-}
-
-void SgmOptimizer::optimize_packed(const PipelineConfig& cfg, const Image8& gray,
-                                   const PackedCostVolume16& packed_cost,
-                                   PackedCostVolume32& packed_cost32) const {
-    if (!packed_cost32.layout() || packed_cost32.layout() != packed_cost.layout()) {
-        packed_cost32.allocate_for_overwrite(packed_cost.layout());
+template <typename TAcc>
+void optimize_packed_impl(const PipelineConfig& cfg, const Image8& gray,
+                          const PackedCostVolume16& packed_cost,
+                          PackedCostVolume<TAcc>& acc) {
+    if (!acc.layout() || acc.layout() != packed_cost.layout()) {
+        acc.allocate_for_overwrite(packed_cost.layout());
     }
 
     const int dirs[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
@@ -394,15 +391,43 @@ void SgmOptimizer::optimize_packed(const PipelineConfig& cfg, const Image8& gray
     for (int p = 0; p < npath; ++p) {
         const auto mode = (p == 0) ? detail::AccumulateMode::Overwrite : detail::AccumulateMode::Add;
         if (use_avx2) {
-            detail::aggregate_path_packed_avx2(cfg, gray, packed_cost, packed_cost32, dirs[p][0], dirs[p][1], mode);
+            detail::aggregate_path_packed_avx2(cfg, gray, packed_cost, acc, dirs[p][0], dirs[p][1], mode);
         } else {
             if (mode == detail::AccumulateMode::Overwrite) {
-                aggregate_path_packed_impl<detail::AccumulateMode::Overwrite>(cfg, gray, packed_cost, packed_cost32, dirs[p][0], dirs[p][1]);
+                aggregate_path_packed_impl<TAcc, detail::AccumulateMode::Overwrite>(cfg, gray, packed_cost, acc, dirs[p][0], dirs[p][1]);
             } else {
-                aggregate_path_packed_impl<detail::AccumulateMode::Add>(cfg, gray, packed_cost, packed_cost32, dirs[p][0], dirs[p][1]);
+                aggregate_path_packed_impl<TAcc, detail::AccumulateMode::Add>(cfg, gray, packed_cost, acc, dirs[p][0], dirs[p][1]);
             }
         }
     }
+}
+
+void SgmOptimizer::aggregate_path_packed(const PipelineConfig& cfg, const Image8& gray,
+                                         const PackedCostVolume16& base,
+                                         PackedCostVolume16& acc, int dx, int dy) const {
+    aggregate_path_packed_impl<uint16_t, detail::AccumulateMode::Add>(cfg, gray, base, acc, dx, dy);
+}
+
+void SgmOptimizer::aggregate_path_packed(const PipelineConfig& cfg, const Image8& gray,
+                                         const PackedCostVolume16& base,
+                                         PackedCostVolume32& acc, int dx, int dy) const {
+    aggregate_path_packed_impl<uint32_t, detail::AccumulateMode::Add>(cfg, gray, base, acc, dx, dy);
+}
+
+void SgmOptimizer::optimize_packed(const PipelineConfig& cfg, const Image8& gray,
+                                   const PackedCostVolume16& packed_cost,
+                                   PackedCostVolume16& packed_sgm16) const {
+#ifndef NDEBUG
+    const int npath = (cfg.sgm.paths == PathType::Path8) ? 8 : 4;
+    assert(can_use_u16_sgm_accumulator(cfg, npath));
+#endif
+    optimize_packed_impl(cfg, gray, packed_cost, packed_sgm16);
+}
+
+void SgmOptimizer::optimize_packed(const PipelineConfig& cfg, const Image8& gray,
+                                   const PackedCostVolume16& packed_cost,
+                                   PackedCostVolume32& packed_cost32) const {
+    optimize_packed_impl(cfg, gray, packed_cost, packed_cost32);
 }
 
 namespace {

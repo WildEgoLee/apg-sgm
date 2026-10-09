@@ -320,6 +320,69 @@ int main() {
     std::cout << "  WTA disparities and costs match 100% bit-exact!\n";
 
     // -------------------------------------------------------------
+    // Test Packed SGM 16-bit Accumulator & Safety Bounds
+    // -------------------------------------------------------------
+    std::cout << "[Test Packed SGM 16-bit Accumulator & Bound Safety]\n";
+    if (!can_use_u16_sgm_accumulator(cfg_hq, 8)) {
+        std::cerr << "Error: default cfg_hq expected to be u16 safe!\n";
+        return 1;
+    }
+
+    PackedCostVolume16 packed_sgm16;
+    sgm.optimize_packed(cfg_hq, buf_packed.left_gray, packed_cost, packed_sgm16);
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int lo = packed_cost.dmin(x, y);
+            const int hi = packed_cost.dmax(x, y);
+            const uint16_t* s16 = packed_sgm16.slice(x, y);
+            const uint32_t* s32 = packed_cost32.slice(x, y);
+            for (int d = lo; d < hi; ++d) {
+                const int di = d - lo;
+                if (s32[di] == kInvalidCost32) {
+                    if (s16[di] != kInvalidCost) {
+                        std::cerr << "SGM u16 sentinel mismatch at (" << x << "," << y << "): "
+                                  << s16[di] << " vs " << s32[di] << "\n";
+                        return 1;
+                    }
+                } else {
+                    if (s32[di] != static_cast<uint32_t>(s16[di])) {
+                        std::cerr << "SGM u16 vs u32 value mismatch at (" << x << "," << y << "): "
+                                  << s16[di] << " vs " << s32[di] << "\n";
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    std::cout << "  16-bit SGM accumulator matches 32-bit SGM accumulator 100% bit-exact!\n";
+
+    Image32f disp_packed16, best_c16, sec_c16;
+    sgm.winner_take_all_packed(cfg_hq, packed_sgm16, disp_packed16, &best_c16, &sec_c16);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const float dp = disp_packed.at(x, y);
+            const float dp16 = disp_packed16.at(x, y);
+            if (std::isnan(dp) != std::isnan(dp16) || (std::isfinite(dp) && std::abs(dp - dp16) > 1e-5f)) {
+                std::cerr << "WTA disparity mismatch between u16 and u32 at (" << x << "," << y << ")\n";
+                return 1;
+            }
+        }
+    }
+    std::cout << "  WTA on 16-bit accumulator matches 32-bit WTA 100% bit-exact!\n";
+
+    // Deliberately construct an unsafe config that forces u32 fallback
+    PipelineConfig unsafe_cfg = cfg_hq;
+    unsafe_cfg.sgm.P2_base = 10000;
+    if (can_use_u16_sgm_accumulator(unsafe_cfg, 8)) {
+        std::cerr << "Error: unsafe_cfg (P2_base=10000) expected to be rejected by can_use_u16_sgm_accumulator!\n";
+        return 1;
+    }
+    PackedCostVolume32 unsafe_cost32;
+    sgm.optimize_packed(unsafe_cfg, buf_packed.left_gray, packed_cost, unsafe_cost32);
+    std::cout << "  Deliberately unsafe config correctly flagged and executed via 32-bit fallback!\n";
+
+    // -------------------------------------------------------------
     // Test Full Pipeline Equivalence (Dense vs Packed Backend)
     // -------------------------------------------------------------
     std::cout << "[Test Full Pipeline Equivalence (Dense vs Packed)]\n";

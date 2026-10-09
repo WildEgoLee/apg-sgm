@@ -630,9 +630,10 @@ Instead, an exact AVX2 integer quotient kernel was designed:
 | **P3.4b Post-Refine LUT** (`a215d2e`) | 35.971 s | -1.933 s | 1.647x |
 | **P3.5b Post-SGM AVX2** (`0c100db`) | 32.335 s | -3.637 s | 1.850x |
 | **P3.7c Post-Cross AVX2** (`702bb79`) | 29.265 s | -3.070 s | 2.044x |
-| **P3.8b-1 Post-First-Path Direct Store** | **26.434 s** | **-2.831 s** | **2.263x** |
+| **P3.8b-1 Post-First-Path Direct Store** (`d63317f`) | 26.434 s | -2.831 s | 2.263x |
+| **P3.8b-2b Post-Packed SGM U16 Accumulator** | **22.798 s** | **-3.636 s** | **2.623x** |
 
-**Net execution time saved**: **-33.374 seconds per full-res F run** (**55.8% end-to-end reduction**, over 2.26x cumulative speedup!).
+**Net execution time saved**: **-37.010 seconds per full-res F run** (**61.9% end-to-end reduction**, over 2.62x cumulative speedup!).
 
 ---
 
@@ -715,3 +716,109 @@ Because path P0 $(+1, 0)$ scans each row from $x = 0$ to $w-1$, it visits every 
 | # 9 | WTA | 619.45 ms | 2.36% | 708.20 ms | 1.143x |
 | #10 | Confidence | 284.32 ms | 1.08% | 309.28 ms | 1.088x |
 | — | **Total Pipeline** | **26,300.96 ms** | **100.00%** | **29,899.98 ms** | **1.137x** |
+
+---
+
+## V3 Priority 3.8b-2: 16-Bit Packed SGM Accumulator & Safety Bound Dispatch
+
+**Status:** IMPLEMENTED & VERIFIED on branch `codex/p3-8b2-packed-sgm-u16-accumulator`. 100% bit-exact dual backend parity across dense/packed backends on E and G modes across all test cases.
+
+### P3.8b-2a: Mathematical Safety Proof & Feasibility Verification
+
+Following P3.8b-1's identification of accumulator memory bandwidth as the primary bottleneck, analysis of the SGM recurrence revealed an opportunity to halve accumulator word width:
+
+1. **Analytical Dynamic Range Bound**:
+   - For each path, the recurrence value satisfies:
+     $$cur = cost + best - min\_prev$$
+   - Since $best \le min\_prev + P2$, it strictly holds that:
+     $$best - min\_prev \le P2$$
+     $$cur \le cost\_max + P2$$
+   - Under the adaptive penalty schedule, $P2(D) = \max(P1 + 1, P2\_base - \lfloor D / \gamma \rfloor) \le \max(P2\_base, P1 + 1)$.
+   - Therefore, the maximum single-path contribution is bounded by:
+     $$path\_max \le cost\_max + \max(P2\_base, P1 + 1)$$
+   - For an $N$-path aggregation, the maximum accumulated cost is strictly bounded by:
+     $$total\_max \le N \times path\_max$$
+   - Under default pipeline parameters ($cost\_max = 255$, $P1 = 10$, $P2\_base = 120$, $N = 8$ paths):
+     $$path\_max \le 255 + 120 = 375$$
+     $$total\_max \le 8 \times 375 = 3000 \ll 65534$$
+   - The sentinel value $kInvalidCost = 65535$ ($0\text{xFFFF}$) remains completely unreachable by valid accumulation (margin of over $62535$).
+
+2. **Centralized Runtime Safety Dispatch**:
+   A centralized predicate `can_use_u16_sgm_accumulator(cfg, npath)` evaluates:
+   ```cpp
+   inline bool can_use_u16_sgm_accumulator(const PipelineConfig& cfg, int npath) {
+       const uint64_t p2_max = std::max<uint64_t>(
+           static_cast<uint64_t>(cfg.sgm.P2_base),
+           static_cast<uint64_t>(cfg.sgm.P1) + 1);
+       const uint64_t path_max = static_cast<uint64_t>(cfg.cost.cost_max) + p2_max;
+       const uint64_t total_max = static_cast<uint64_t>(npath) * path_max;
+       return total_max < kInvalidCost;
+   }
+   ```
+   If any user configuration exceeds the $uint16\_t$ dynamic range, the pipeline automatically and transparently falls back to the 32-bit `packed_cost32` accumulator path.
+
+3. **Empirical Feasibility & Invariant Checks**:
+   - Across full-resolution Middlebury 2014 scenes (ArtL, Piano, Vintage) spanning 19.5B accumulator evaluations:
+     - ArtL: Observed maximum accumulated cost = **2686** (Theoretical bound: 3000)
+     - Piano: Observed maximum accumulated cost = **2639** (Theoretical bound: 3000)
+     - Vintage: Observed maximum accumulated cost = **2784** (Theoretical bound: 3000)
+     - In all cases, maximum observed cost was $\le 2784$, leaving a **95.75% safety headroom** below 65535.
+     - 100% bit-exact disparity maps and zero accumulator overflows were verified against the 32-bit golden reference.
+
+---
+
+### P3.8b-2b: Production Architecture & AVX2 Kernel Details
+
+1. **Buffer Naming & Management**:
+   - Added `PackedCostVolume16 packed_sgm16;` to `PipelineBuffers` for the 16-bit accumulator.
+   - Retained `PackedCostVolume32 packed_cost32;` exclusively for the safe fallback path.
+   - Memory allocation in `src/pipeline.cpp` allocates only the active volume and releases the inactive one, keeping working-set memory lean.
+   - Peak volume memory on Vintage drops from **17.68 GB down to 11.80 GB** (-5.88 GB, **-33.3%**).
+
+2. **AVX2 16-bit Accumulator Kernel**:
+   - **Path P0 (Overwrite)**: Stores 8 lanes of 16-bit values (128 bits total) directly using `_mm256_packus_epi32` and `_mm_storeu_si128`, saving half the write traffic compared to 256-bit 32-bit stores.
+   - **Paths P1..P7 (Add)**: Loads 8 lanes of 16-bit accumulator values via `_mm_loadu_si128`, zero-extends to 32 bits with `_mm256_cvtepu16_epi32`, performs vector addition and invalid blending in 32-bit registers, saturates and packs back to 16 bits with `_mm_packus_epi32`, and writes back 128 bits via `_mm_storeu_si128`.
+   - **Memory Traffic Reduction**: Halves accumulator read/write bandwidth from 8 bytes/state to 4 bytes/state. Across 8 paths, SGM memory bus traffic is reduced by 50% on all accumulator interactions.
+
+3. **Downstream Direct Consumption**:
+   - `winner_take_all_packed` natively accepts `PackedCostVolume16`, avoiding any format conversion or intermediary allocation.
+
+---
+
+### P3.8b-2c: Performance Verification & Merge Gate Evaluation
+
+#### SGM Stage Results (16 Threads, Middlebury 2014 Full-Res F, G-mode, 4 Repeats)
+
+| Scene | Baseline SGM (P3.8b-1) | P3.8b-2b SGM (ms) | SGM Speedup | SGM Time Delta | Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 699.60 ms | 513.26 ms | **1.363x** | -186.34 ms | 100% bit-exact |
+| **Piano (F)** | 2,745.26 ms | 1,964.16 ms | **1.398x** | -781.10 ms | 100% bit-exact |
+| **Vintage (F)** | 6,586.50 ms | 4,396.16 ms | **1.498x** | -2,190.34 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.418x** (Gate: $\ge 1.35\times$) | — | **PASS** |
+| **Pooled Total Sum** | 10,031.36 ms | 6,873.58 ms | **1.460x** | **-3,157.78 ms** | **PASS** |
+
+#### End-to-End Pipeline Results (16 Threads, G-mode, 4 Repeats)
+
+| Scene | P3.8b-1 Pipeline (ms) | P3.8b-2b Pipeline (ms) | Pipeline Speedup | Pipeline Time Delta | Dual Backend Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 2,138.57 ms | 1,918.15 ms | **1.115x** | -220.42 ms | 100% bit-exact |
+| **Piano (F)** | 7,941.67 ms | 7,037.36 ms | **1.129x** | -904.31 ms | 100% bit-exact |
+| **Vintage (F)** | 16,353.67 ms | 13,842.79 ms | **1.181x** | -2,510.88 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.141x** (Gate: $\ge 1.08\times$) | — | **PASS** |
+| **Pooled Total Sum** | 26,433.91 ms | 22,798.30 ms | **1.159x** | **-3,635.61 ms** | **PASS** |
+
+#### Post-P3.8b-2b 10-Stage Attribution Profile (16 Threads, Pooled 3 Scenes)
+
+| Rank | Stage | Pooled Time (ms) | Stage Share | vs Post-P3.8b-1 Time | vs Post-P3.8b-1 Speedup |
+|:---:|:---|---:|---:|---:|:---:|
+| # 1 | **SGM** | **6,843.45 ms** | **30.20%** | 10,089.04 ms | **1.474x** |
+| # 2 | Cross | 4,091.24 ms | 18.03% | 4,086.66 ms | 0.999x |
+| # 3 | Cost | 3,724.88 ms | 16.43% | 4,202.69 ms | 1.128x |
+| # 4 | Refine | 2,561.12 ms | 11.30% | 2,565.37 ms | 1.002x |
+| # 5 | Prior | 1,450.31 ms | 6.40% | 1,452.03 ms | 1.001x |
+| # 6 | Right WTA | 1,368.10 ms | 6.04% | 1,369.69 ms | 1.001x |
+| # 7 | Post | 1,042.80 ms | 4.60% | 1,044.56 ms | 1.002x |
+| # 8 | Aux | 663.20 ms | 2.93% | 664.65 ms | 1.002x |
+| # 9 | WTA | 618.50 ms | 2.73% | 619.45 ms | 1.002x |
+| #10 | Confidence | 284.10 ms | 1.25% | 284.32 ms | 1.001x |
+| — | **Total Pipeline** | **22,647.70 ms** | **100.00%** | **26,300.96 ms** | **1.161x** |

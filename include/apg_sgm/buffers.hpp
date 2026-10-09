@@ -88,6 +88,7 @@ struct PipelineBuffers {
     CostVolume32 cost32;
     CostVolume cost_right;
     PackedCostVolume16 packed_cost;
+    PackedCostVolume16 packed_sgm16;
     PackedCostVolume32 packed_cost32;
     Image32f disparity;
     Image32f d_before_refine;
