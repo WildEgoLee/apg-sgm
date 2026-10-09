@@ -542,6 +542,81 @@ int main() {
         std::cout << "  Vertical tiling partial widths (1, 7, 15, 16, 17, 31, 32, 33) passed!\n";
     }
 
+    // -------------------------------------------------------------
+    // Test SGM Diagonal Ray Interleaving Boundary & Partial Widths
+    // -------------------------------------------------------------
+    std::cout << "[Test SGM Diagonal Ray Interleaving Partial Widths & Edge Cases]\n";
+    {
+        const std::vector<std::pair<int, int>> test_shapes = {
+            {1, 1}, {7, 9}, {15, 17}, {16, 16}, {17, 23}, {31, 29}, {32, 33}, {33, 31}, {65, 48}
+        };
+        SgmOptimizer sgm_opt;
+
+        for (const auto& sh : test_shapes) {
+            const int tw = sh.first;
+            const int th = sh.second;
+            for (PathType ptype : {PathType::Path4, PathType::Path8}) {
+                PipelineConfig test_cfg;
+                test_cfg.sgm.paths = ptype;
+                test_cfg.sgm.P1 = 10;
+                test_cfg.sgm.P2_base = 120;
+                test_cfg.volume_backend = VolumeBackend::Packed;
+
+                Image8 t_gray(tw, th, 128);
+                SearchRange t_range;
+                t_range.dmin = Image16s(tw, th, 0);
+                t_range.dmax = Image16s(tw, th, 0);
+
+                for (int y = 0; y < th; ++y) {
+                    for (int x = 0; x < tw; ++x) {
+                        t_gray.at(x, y) = static_cast<uint8_t>((x * 19 + y * 29) % 256);
+                        int d0 = (x % 3 == 0) ? -5 : (x % 4);
+                        int d1 = d0 + ((x + y) % 21 + 1);
+                        if ((x + y) % 13 == 0) {
+                            d0 = 0; d1 = 0;
+                        }
+                        t_range.dmin.at(x, y) = static_cast<int16_t>(d0);
+                        t_range.dmax.at(x, y) = static_cast<int16_t>(d1);
+                    }
+                }
+
+                auto t_layout = PackedVolumeLayout::from_range(t_range);
+                PackedCostVolume16 t_cost(t_layout);
+                for (size_t i = 0; i < t_layout->state_count(); ++i) {
+                    t_cost.data()[i] = (i % 7 == 0) ? kInvalidCost : static_cast<uint16_t>(i % 250);
+                }
+
+                PackedCostVolume16 t_sgm(t_layout);
+                sgm_opt.optimize_packed(test_cfg, t_gray, t_cost, t_sgm);
+
+                // Verify sentinel preservation across all pixels
+                for (int y = 0; y < th; ++y) {
+                    for (int x = 0; x < tw; ++x) {
+                        int D_p = t_layout->disp_width(y * tw + x);
+                        const uint16_t* c = t_cost.slice(x, y);
+                        const uint16_t* s = t_sgm.slice(x, y);
+                        for (int di = 0; di < D_p; ++di) {
+                            if (c[di] == kInvalidCost) {
+                                if (s[di] != kInvalidCost) {
+                                    std::cerr << "Diagonal sentinel violation at dim=" << tw << "x" << th
+                                              << " (" << x << "," << y << ")\n";
+                                    return 1;
+                                }
+                            } else {
+                                if (s[di] == kInvalidCost) {
+                                    std::cerr << "Diagonal unexpected invalid at dim=" << tw << "x" << th
+                                              << " (" << x << "," << y << ")\n";
+                                    return 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        std::cout << "  Diagonal interleaving edge cases & partial shapes passed!\n";
+    }
+
     std::cout << "sanity ok\n";
     return 0;
 }

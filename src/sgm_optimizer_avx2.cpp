@@ -305,56 +305,118 @@ void aggregate_path_packed_avx2_impl(const PipelineConfig& cfg, const Image8& gr
             }
         }
     } else {
-        const int nrays = w + h - 1;
+        constexpr int kDiagHorizontalRayBlock = 16;
+        constexpr int kDiagSideRayBlock = 32;
+
+        // 1. Family H: Horizontal-border origins (r in [0, w))
+        const int num_h_blocks = (w + kDiagHorizontalRayBlock - 1) / kDiagHorizontalRayBlock;
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(dynamic, 1)
 #endif
-        for (int r = 0; r < nrays; ++r) {
-            PathState prev, cur;
-            int x = 0, y = 0;
-            if (dx == 1 && dy == 1) {
-                if (r < w) {
-                    x = r;
-                    y = 0;
-                } else {
-                    x = 0;
-                    y = r - w + 1;
+        for (int bi = 0; bi < num_h_blocks; ++bi) {
+            const int rb_start = bi * kDiagHorizontalRayBlock;
+            const int rb_end = std::min(w, rb_start + kDiagHorizontalRayBlock);
+            const int act_b = rb_end - rb_start;
+
+            std::array<PathState, kDiagHorizontalRayBlock> prev;
+            std::array<PathState, kDiagHorizontalRayBlock> cur;
+            std::array<bool, kDiagHorizontalRayBlock> has_prev{};
+            std::array<int, kDiagHorizontalRayBlock> prev_x{};
+            std::array<int, kDiagHorizontalRayBlock> prev_y{};
+
+            const int start_y = (dy == 1) ? 0 : (h - 1);
+            for (int step = 0; step < h; ++step) {
+                const int cur_y = start_y + dy * step;
+                bool any_active = false;
+
+                for (int i = 0; i < act_b; ++i) {
+                    const int start_x = rb_start + i;
+                    const int cur_x = start_x + dx * step;
+                    if (cur_x >= 0 && cur_x < w) {
+                        any_active = true;
+                        process_pixel_packed_avx2<TAcc, Mode>(
+                            cur_x, cur_y, has_prev[i], prev_x[i], prev_y[i],
+                            P1, cfg.sgm, gray, base, acc, prev[i], cur[i]);
+                        has_prev[i] = true;
+                        prev_x[i] = cur_x;
+                        prev_y[i] = cur_y;
+                    }
                 }
-            } else if (dx == 1 && dy == -1) {
-                if (r < w) {
-                    x = r;
-                    y = h - 1;
-                } else {
-                    x = 0;
-                    y = h - 1 - (r - w + 1);
-                }
-            } else if (dx == -1 && dy == 1) {
-                if (r < w) {
-                    x = r;
-                    y = 0;
-                } else {
-                    x = w - 1;
-                    y = r - w + 1;
-                }
-            } else { // dx == -1 && dy == -1
-                if (r < w) {
-                    x = r;
-                    y = h - 1;
-                } else {
-                    x = w - 1;
-                    y = h - 1 - (r - w + 1);
+                if (!any_active) {
+                    break;
                 }
             }
+        }
 
-            bool hp = false;
-            int px = x, py = y;
-            while (x >= 0 && x < w && y >= 0 && y < h) {
-                process_pixel_packed_avx2<TAcc, Mode>(x, y, hp, px, py, P1, cfg.sgm, gray, base, acc, prev, cur);
-                hp = true;
-                px = x;
-                py = y;
-                x += dx;
-                y += dy;
+        // 2. Family S: Side-border origins (r in [w, w + h - 1), excluding corner)
+        const int n_side_rays = h - 1;
+        if (n_side_rays > 0) {
+            const int num_s_blocks = (n_side_rays + kDiagSideRayBlock - 1) / kDiagSideRayBlock;
+            const int side_x = (dx == 1) ? 0 : (w - 1);
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+            for (int bi = 0; bi < num_s_blocks; ++bi) {
+                const int kb_start = bi * kDiagSideRayBlock;
+                const int kb_end = std::min(n_side_rays, kb_start + kDiagSideRayBlock);
+                const int act_b = kb_end - kb_start;
+
+                std::array<PathState, kDiagSideRayBlock> prev;
+                std::array<PathState, kDiagSideRayBlock> cur;
+                std::array<bool, kDiagSideRayBlock> has_prev{};
+                std::array<int, kDiagSideRayBlock> prev_x{};
+                std::array<int, kDiagSideRayBlock> prev_y{};
+
+                std::array<int, kDiagSideRayBlock> start_y{};
+                for (int i = 0; i < act_b; ++i) {
+                    const int k = kb_start + i;
+                    start_y[i] = (dy == 1) ? (k + 1) : (h - 2 - k);
+                }
+
+                if (dy == 1) { // global y increasing
+                    const int y_min = start_y[0];
+                    const int y_max = h - 1;
+
+                    for (int y = y_min; y <= y_max; ++y) {
+                        for (int i = 0; i < act_b; ++i) {
+                            const int sy = start_y[i];
+                            if (y >= sy) {
+                                const int step = y - sy;
+                                const int x = side_x + dx * step;
+                                if (x >= 0 && x < w) {
+                                    process_pixel_packed_avx2<TAcc, Mode>(
+                                        x, y, has_prev[i], prev_x[i], prev_y[i],
+                                        P1, cfg.sgm, gray, base, acc, prev[i], cur[i]);
+                                    has_prev[i] = true;
+                                    prev_x[i] = x;
+                                    prev_y[i] = y;
+                                }
+                            }
+                        }
+                    }
+                } else { // dy == -1, global y decreasing
+                    const int y_max = start_y[0];
+                    const int y_min = 0;
+
+                    for (int y = y_max; y >= y_min; --y) {
+                        for (int i = 0; i < act_b; ++i) {
+                            const int sy = start_y[i];
+                            if (y <= sy) {
+                                const int step = sy - y;
+                                const int x = side_x + dx * step;
+                                if (x >= 0 && x < w) {
+                                    process_pixel_packed_avx2<TAcc, Mode>(
+                                        x, y, has_prev[i], prev_x[i], prev_y[i],
+                                        P1, cfg.sgm, gray, base, acc, prev[i], cur[i]);
+                                    has_prev[i] = true;
+                                    prev_x[i] = x;
+                                    prev_y[i] = y;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
