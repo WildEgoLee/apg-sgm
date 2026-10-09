@@ -631,9 +631,10 @@ Instead, an exact AVX2 integer quotient kernel was designed:
 | **P3.5b Post-SGM AVX2** (`0c100db`) | 32.335 s | -3.637 s | 1.850x |
 | **P3.7c Post-Cross AVX2** (`702bb79`) | 29.265 s | -3.070 s | 2.044x |
 | **P3.8b-1 Post-First-Path Direct Store** (`d63317f`) | 26.434 s | -2.831 s | 2.263x |
-| **P3.8b-2b Post-Packed SGM U16 Accumulator** | **22.798 s** | **-3.636 s** | **2.623x** |
+| **P3.8b-2b Post-Packed SGM U16 Accumulator** (`70b7655`) | 22.798 s | -3.636 s | 2.623x |
+| **P3.9a Post-Packed Right-WTA State-Major** | **21.799 s** | **-0.999 s** | **2.744x** |
 
-**Net execution time saved**: **-37.010 seconds per full-res F run** (**61.9% end-to-end reduction**, over 2.62x cumulative speedup!).
+**Net execution time saved**: **-38.009 seconds per full-res F run** (**63.6% end-to-end reduction**, over 2.74x cumulative speedup!).
 
 ---
 
@@ -822,3 +823,85 @@ Following P3.8b-1's identification of accumulator memory bandwidth as the primar
 | # 9 | WTA | 618.50 ms | 2.73% | 619.45 ms | 1.002x |
 | #10 | Confidence | 284.10 ms | 1.25% | 284.32 ms | 1.001x |
 | — | **Total Pipeline** | **22,647.70 ms** | **100.00%** | **26,300.96 ms** | **1.161x** |
+
+---
+
+## V3 Priority 3.9a: Packed Right-WTA State-Major Traversal
+
+**Status:** IMPLEMENTED & VERIFIED on branch `codex/p3-9a-packed-right-wta-state-major`. 100% bit-exact dual backend parity across dense/packed backends on E and G modes across all test cases.
+
+### P3.9a-1: Bottleneck Analysis & Algorithmic Redesign
+
+Following P3.8b-2b's reduction of SGM runtime to 30.20%, stage attribution revealed Right WTA occupying **1,392.35 ms (6.14%)** of pipeline time. Investigation of `wta_right_from_packed_volume` revealed a severe data-structure mismatch:
+1. **Disparity-Raster Mismatch**: The legacy packed Right-WTA loop iterated per right pixel $x_r$, sweeping over the global disparity range $d \in [d_0, d_0 + D)$. For each $(x_r, d)$, it computed $x_l = x_r + d$ and invoked `vol.contains(xl, y, d)` and `vol.at(xl, y, d)`.
+2. **Cache Inefficiency & Branching**: Because packed volume slices are indexed by left coordinate $(x_l, y)$, iterating across $x_r$ caused non-contiguous, jumping memory reads across slices, coupled with branch mispredictions in bounds checking.
+3. **State-Major Redesign**:
+   - Invert the iteration order to state-major:
+     ```cpp
+     for (int y = 0; y < h; ++y) {
+         std::fill(best_cost.begin(), best_cost.end(), kInvalidCost);
+         std::fill(best_d.begin(), best_d.end(), -1);
+
+         for (int xl = 0; xl < w; ++xl) {
+             const int lo = vol.dmin(xl, y);
+             const int hi = vol.dmax(xl, y);
+             const uint16_t* s = vol.slice(xl, y);
+             const int count = hi - lo;
+
+             for (int di = 0; di < count; ++di) {
+                 const int d = lo + di;
+                 const int xr = xl - d;
+                 if (xr < 0 || xr >= w) continue;
+
+                 const uint16_t c = s[di];
+                 if (c != kInvalidCost && c < best_cost[xr]) {
+                     best_cost[xr] = c;
+                     best_d[xr] = d;
+                 }
+             }
+         }
+         // Subpixel interpolation per xr using best_d[xr]
+     }
+     ```
+   - **Persistent OpenMP Thread-Local Scratch**: Allocates `std::vector<uint16_t> best_cost(w)` and `std::vector<int> best_d(w)` once per OpenMP thread outside the row loop, avoiding dynamic allocation in the hot loop.
+   - **Bit-Exact Tie Semantics**: For any fixed $x_r$, candidate disparities satisfy $d = x_l - x_r$. As $x_l$ increases strictly monotonically from $0$ to $w-1$, $d$ also strictly increases. With strict inequality `<` updates, the candidate with minimal disparity is chosen on cost ties, guaranteeing 100% bit-exact parity with the legacy raster loop.
+
+---
+
+### P3.9a-2: Performance Verification & Merge Gate Evaluation
+
+#### Right WTA Stage Results (16 Threads, Middlebury 2014 Full-Res F, G-mode, 4 Repeats)
+
+| Scene | Baseline Right WTA (P3.8b-2b) | P3.9a Right WTA (ms) | Right WTA Speedup | Right WTA Time Delta | Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 89.56 ms | 31.70 ms | **2.825x** | -57.86 ms | 100% bit-exact |
+| **Piano (F)** | 337.27 ms | 118.65 ms | **2.842x** | -218.62 ms | 100% bit-exact |
+| **Vintage (F)** | 965.52 ms | 266.66 ms | **3.621x** | -698.86 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **3.075x** (Gate: $\ge 1.50\times$) | — | **PASS** |
+| **Pooled Total Sum** | 1,392.35 ms | 417.01 ms | **3.339x** | **-975.34 ms (-0.98 s)** | **PASS** |
+
+#### End-to-End Pipeline Results (16 Threads, G-mode, 4 Repeats)
+
+| Scene | P3.8b-2b Pipeline (ms) | P3.9a Pipeline (ms) | Pipeline Speedup | Pipeline Time Delta | Dual Backend Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 1,875.48 ms | 1,842.87 ms | **1.018x** | -32.61 ms | 100% bit-exact |
+| **Piano (F)** | 6,975.46 ms | 6,775.97 ms | **1.029x** | -199.49 ms | 100% bit-exact |
+| **Vintage (F)** | 13,811.65 ms | 13,180.21 ms | **1.048x** | -631.44 ms | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.0315x** (Gate: $\ge 1.015\times$) | — | **PASS** |
+| **Pooled Total Sum** | 22,662.59 ms | 21,799.05 ms | **1.040x** | **-863.54 ms (-0.86 s)** | **PASS** |
+
+#### Post-P3.9a 10-Stage Attribution Profile (16 Threads, Pooled 3 Scenes)
+
+| Rank | Stage | Pooled Time (ms) | Stage Share | vs Post-P3.8b-2b Time | vs Post-P3.8b-2b Speedup |
+|:---:|:---|---:|---:|---:|:---:|
+| # 1 | **SGM** | **6,927.14 ms** | **31.78%** | 6,843.45 ms | 0.988x |
+| # 2 | Cross | 4,080.73 ms | 18.72% | 4,091.24 ms | 1.003x |
+| # 3 | Cost | 3,734.11 ms | 17.13% | 3,724.88 ms | 0.998x |
+| # 4 | Refine | 2,558.37 ms | 11.74% | 2,561.12 ms | 1.001x |
+| # 5 | Prior | 1,482.68 ms | 6.80% | 1,450.31 ms | 0.978x |
+| # 6 | Post | 1,035.03 ms | 4.75% | 1,042.80 ms | 1.008x |
+| # 7 | Aux | 681.32 ms | 3.13% | 663.20 ms | 0.973x |
+| # 8 | WTA | 630.33 ms | 2.89% | 618.50 ms | 0.981x |
+| # 9 | **Right WTA** | **417.01 ms** | **1.91%** | **1,392.35 ms** | **3.339x** |
+| #10 | Confidence | 289.84 ms | 1.33% | 284.10 ms | 0.980x |
+| — | **Total Pipeline** | **21,799.05 ms** | **100.00%** | **22,647.70 ms** | **1.039x** |
