@@ -972,3 +972,101 @@ Following P3.9b-1's feasibility study (99.56% 8-lane coverage, 6.75x isolated pr
 | # 9 | Right WTA | 418.93 ms | 2.21% | 417.01 ms | 0.995x |
 | #10 | Confidence | 287.73 ms | 1.52% | 289.84 ms | 1.007x |
 | — | **Total Pipeline** | **18,948.85 ms** | **100.00%** | **21,799.05 ms** | **1.150x** |
+
+---
+
+## V3 Priority 3.10b-1: SGM Path-Pair Fusion & Vertical Locality Feasibility
+
+**Status:** FEASIBILITY COMPLETED. Path-Pair Fusion REJECTED (NO-GO). Vertical Tiling CONFIRMED (STRONG GO).
+
+In P3.10b-1, four orthogonal prototypes were evaluated on 16 threads across Middlebury 2014 full-res F (ArtL, Piano, Vintage) against the current production baseline:
+
+1. **HPAIR (Horizontal Pair Fusion: P0 + P1)**:
+   - Evaluated storing P0 contribution into a row-local scratch buffer, then during P1 reading scratch and performing a single overwrite into the global accumulator.
+   - Result: ArtL 1.074x, Piano 0.693x, Vintage 0.677x. **Geomean = 0.796x (NO-GO)**.
+2. **VPAIR (Vertical Pair Fusion: P2 + P3, Column Traversal)**:
+   - Evaluated storing Down contribution into a column-local scratch buffer, then during Up reading scratch and performing a single RMW into the global accumulator.
+   - Result: ArtL 1.080x, Piano 0.997x, Vintage 0.791x. **Geomean = 0.948x (NO-GO)**.
+3. **VPAIR + VTILE (Combined Vertical Fusion + Tiling)**:
+   - Result: ArtL 0.871x, Piano 1.109x, Vintage 0.920x. **Geomean = 0.961x (NO-GO)**.
+4. **VTILE (Vertical Tiled Traversal, B=16)**:
+   - Restructured P2/P3 traversal into $x$-blocks ($B=16$), traversing $y$ in outer loop and $B$ adjacent $x$ columns in inner loop with independent `PathState` chains.
+   - Result: ArtL 1.687x, Piano 1.785x, Vintage 1.438x. **Geomean = 1.631x (STRONG GO)**.
+
+**Attribution Note:** Pair-fusion prototypes replaced global accumulator accesses with contribution scratch but did not reduce logical byte volume in these designs; increased scratch working-set costs outweighed the intended benefit. Consequently, all pair-fusion designs were abandoned in favor of pure vertical tiling.
+
+---
+
+## V3 Priority 3.10b-2: SGM Vertical X-Tiling Production Implementation
+
+**Status:** IMPLEMENTED & MERGED on branch `codex/p3-10b2-sgm-vertical-x-tiling`. 100% bit-exact parity across dense/packed backends on E and G modes.
+
+### P3.10b-2a: Production Architecture & Implementation Details
+
+1. **Vertical X-Tile Traversal**:
+   - In `src/sgm_optimizer_avx2.cpp`, vertical paths P2 `(0, +1)` and P3 `(0, -1)` were restructured to process columns in blocks of `kVerticalTileX = 16`.
+   - Outer loop iterates over $x$-blocks $[xb, \min(xb + 16, w))$, maintaining `std::array<PathState, 16>` for `prev` and `cur` states.
+   - Inner loop runs along $y$, processing $nb \le 16$ adjacent pixels per step.
+   - No additional contribution scratch arrays are introduced; active working set is strictly $16 \times \text{PathState}$.
+
+2. **Scheduling & B=1 Control Attribution**:
+   - An isolated microcheck on Piano and Vintage decomposed the baseline-to-production speedup:
+     - **Current $\to$ B1**: 1.358x pooled (explained by framework/traversal restructuring effect and `#pragma omp parallel for schedule(dynamic, 1)` task granularity).
+     - **B1 $\to$ B16**: 1.147x pooled (direct spatial cache locality improvement across packed volume slices).
+     - **Total Vertical Speedup**: 1.557x pooled / 1.627x geomean.
+   - OpenMP scheduling comparison showed `schedule(dynamic, 1)` outperforms `schedule(static)` by ~11% on Piano (due to ragged packed workload variation across $x$). Fixed to `schedule(dynamic, 1)`.
+
+3. **Partial Tile Correctness**:
+   - Unit tests added to `tests/test_sanity.cpp` explicitly validating widths $w \in \{1, 7, 15, 16, 17, 31, 32, 33\}$ across Path4 and Path8 modes with negative disparities and empty slices.
+
+---
+
+### P3.10b-2b: Production Benchmark & Gate Evaluation
+
+#### 1. Vertical P2+P3 Isolated Results (16 Threads, G-mode, 4 Repeats, Median)
+
+| Scene | Baseline Vertical (ms) | B=1 Control (ms) | P3.10b-2 B=16 (ms) | Curr $\to$ B1 | B1 $\to$ B16 | Total Speedup | Gate |
+|:---|---:|---:|---:|:---:|:---:|:---:|:---:|
+| **ArtL (F)** | 164.16 ms | 106.49 ms | **99.42 ms** | 1.541x | 1.071x | **1.651x** | $\ge 1.20\times$ (PASS) |
+| **Piano (F)** | 686.41 ms | 465.59 ms | **379.89 ms** | 1.474x | 1.226x | **1.807x** | $\ge 1.20\times$ (PASS) |
+| **Vintage (F)** | 1,329.58 ms | 1,033.80 ms | **920.70 ms** | 1.286x | 1.123x | **1.444x** | $\ge 1.20\times$ (PASS) |
+| **Scene-Balanced Geomean** | — | — | — | **1.428x** | **1.139x** | **1.627x** | **$\ge 1.40\times$ (PASS)** |
+| **Pooled Total Sum** | 2,180.15 ms | 1,605.88 ms | **1,400.01 ms** | **1.358x** | **1.147x** | **1.557x (-780 ms)** | **PASS** |
+
+#### 2. Full SGM Stage Results (16 Threads, G-mode, 4 Repeats, Median)
+
+| Scene | Baseline SGM (ms) | P3.10b-2 SGM (ms) | SGM Speedup | Gate | Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 493.89 ms | **402.22 ms** | **1.228x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Piano (F)** | 1,887.56 ms | **1,647.39 ms** | **1.146x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Vintage (F)** | 4,326.43 ms | **3,993.12 ms** | **1.083x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.151x** | **$\ge 1.08\times$ (PASS)** | **PASS** |
+| **Pooled Total Sum** | 6,707.89 ms | **6,042.74 ms** | **1.110x (-665 ms)** | — | **PASS** |
+
+#### 3. Full Pipeline End-to-End Results (16 Threads, G-mode, 4 Repeats, Median)
+
+| Scene | Baseline Pipeline (ms) | P3.10b-2 Pipeline (ms) | Pipeline Speedup | Gate | Dual Backend Parity |
+|:---|---:|---:|:---:|:---:|:---:|
+| **ArtL (F)** | 1,659.20 ms | **1,567.52 ms** | **1.058x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Piano (F)** | 6,215.46 ms | **5,975.29 ms** | **1.040x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Vintage (F)** | 11,516.03 ms | **11,182.72 ms** | **1.030x** | $\ge 0.995\times$ (PASS) | 100% bit-exact |
+| **Scene-Balanced Geomean** | — | — | **1.043x** | **$\ge 1.025\times$ (PASS)** | **PASS** |
+| **Pooled Total Sum** | 19,390.69 ms | **18,725.53 ms** | **1.036x (-665 ms)** | — | **PASS** |
+
+#### 4. Post-P3.10b-2 10-Stage Attribution Profile (16 Threads, Pooled 3 Scenes)
+
+| Rank | Stage | Pooled Time (ms) | Stage Share | vs Post-P3.9b-2 Time | vs Post-P3.9b-2 Speedup |
+|:---:|:---|---:|---:|---:|:---:|
+| # 1 | **SGM** | **6,309.24 ms** | **33.69%** | 6,932.88 ms | **1.099x (-623.6 ms)** |
+| # 2 | Cross | 4,394.53 ms | 23.47% | 4,088.95 ms | 0.930x |
+| # 3 | Refine | 2,565.64 ms | 13.70% | 2,595.15 ms | 1.011x |
+| # 4 | Prior | 1,469.29 ms | 7.85% | 1,455.20 ms | 0.990x |
+| # 5 | Post | 1,039.43 ms | 5.55% | 1,040.97 ms | 1.001x |
+| # 6 | Cost | 807.35 ms | 4.31% | 791.26 ms | 0.980x |
+| # 7 | Aux | 671.75 ms | 3.59% | 661.36 ms | 0.985x |
+| # 8 | WTA | 634.33 ms | 3.39% | 639.49 ms | 1.008x |
+| # 9 | Right WTA | 419.76 ms | 2.24% | 418.93 ms | 0.998x |
+| #10 | Confidence | 286.96 ms | 1.53% | 287.73 ms | 1.003x |
+| — | **Total Pipeline** | **18,725.53 ms** | **100.00%** | **18,948.85 ms** | **1.012x (vs paired: 1.036x)** |
+
+**Cumulative Speedup vs P3.0 Baseline (59.83 s):** **3.195x** (Total pipeline reduced from 59.83 s to 18.73 s).

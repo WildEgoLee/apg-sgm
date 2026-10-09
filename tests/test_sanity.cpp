@@ -472,6 +472,76 @@ int main() {
     }
     std::cout << "  Negative disparity test (-8 to 16) 100% bit-exact match!\n";
 
+    // -------------------------------------------------------------
+    // Test SGM Vertical Tiling Partial Widths & Boundary Checks
+    // -------------------------------------------------------------
+    std::cout << "[Test SGM Vertical Tiling Partial Tile Widths & Edge Cases]\n";
+    {
+        const std::vector<int> test_widths = {1, 7, 15, 16, 17, 31, 32, 33};
+        const int test_h = 24;
+        SgmOptimizer sgm_opt;
+
+        for (int tw : test_widths) {
+            for (PathType ptype : {PathType::Path4, PathType::Path8}) {
+                PipelineConfig test_cfg;
+                test_cfg.sgm.paths = ptype;
+                test_cfg.sgm.P1 = 10;
+                test_cfg.sgm.P2_base = 120;
+                test_cfg.volume_backend = VolumeBackend::Packed;
+
+                Image8 t_gray(tw, test_h, 128);
+                SearchRange t_range;
+                t_range.dmin = Image16s(tw, test_h, 0);
+                t_range.dmax = Image16s(tw, test_h, 0);
+
+                for (int y = 0; y < test_h; ++y) {
+                    for (int x = 0; x < tw; ++x) {
+                        t_gray.at(x, y) = static_cast<uint8_t>((x * 17 + y * 23) % 256);
+                        int d0 = (x % 3 == 0) ? -4 : (x % 5);
+                        int d1 = d0 + ((x + y) % 19 + 1);
+                        if ((x + y) % 13 == 0) {
+                            d0 = 0; d1 = 0; // empty slice
+                        }
+                        t_range.dmin.at(x, y) = static_cast<int16_t>(d0);
+                        t_range.dmax.at(x, y) = static_cast<int16_t>(d1);
+                    }
+                }
+
+                auto t_layout = PackedVolumeLayout::from_range(t_range);
+                PackedCostVolume16 t_cost(t_layout);
+                for (size_t i = 0; i < t_layout->state_count(); ++i) {
+                    t_cost.data()[i] = (i % 11 == 0) ? kInvalidCost : static_cast<uint16_t>(i % 240);
+                }
+
+                PackedCostVolume16 t_sgm(t_layout);
+                sgm_opt.optimize_packed(test_cfg, t_gray, t_cost, t_sgm);
+
+                // Verify valid accumulator contents and invalid sentinel integrity
+                for (int y = 0; y < test_h; ++y) {
+                    for (int x = 0; x < tw; ++x) {
+                        int D_p = t_layout->disp_width(y * tw + x);
+                        const uint16_t* c = t_cost.slice(x, y);
+                        const uint16_t* s = t_sgm.slice(x, y);
+                        for (int di = 0; di < D_p; ++di) {
+                            if (c[di] == kInvalidCost) {
+                                if (s[di] != kInvalidCost) {
+                                    std::cerr << "Sentinel violation at w=" << tw << " (" << x << "," << y << ")\n";
+                                    return 1;
+                                }
+                            } else {
+                                if (s[di] == kInvalidCost) {
+                                    std::cerr << "Unexpected invalid at w=" << tw << " (" << x << "," << y << ")\n";
+                                    return 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        std::cout << "  Vertical tiling partial widths (1, 7, 15, 16, 17, 31, 32, 33) passed!\n";
+    }
+
     std::cout << "sanity ok\n";
     return 0;
 }
