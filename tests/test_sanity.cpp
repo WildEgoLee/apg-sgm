@@ -4,6 +4,8 @@
 #include "apg_sgm/sgm_optimizer.hpp"
 #include "apg_sgm/prior_estimator.hpp"
 #include "apg_sgm/packed_volume.hpp"
+#include "apg_sgm/refiner.hpp"
+#include "refiner_internal.hpp"
 
 #include <cmath>
 #include <iostream>
@@ -615,6 +617,105 @@ int main() {
             }
         }
         std::cout << "  Diagonal interleaving edge cases & partial shapes passed!\n";
+    }
+
+    // -------------------------------------------------------------
+    // Comprehensive Test Matrix: Refiner refine_scalar vs refine_avx2 Bit-Exact Parity
+    // -------------------------------------------------------------
+    {
+        std::cout << "[Test Refiner Dispatch Parity: Scalar vs AVX2 (Full Matrix)]\n";
+
+        const std::vector<std::pair<int, int>> test_sizes = {
+            {32, 24}, {65, 47}, {17, 33}
+        };
+
+        for (const auto& sz : test_sizes) {
+            const int tw = sz.first;
+            const int th = sz.second;
+
+            Image8 t_left(tw, th, 1);
+            Image8 t_right(tw, th, 1);
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    t_left.at(x, y) = static_cast<uint8_t>((x * 17 + y * 31) % 256);
+                    int xr = std::max(0, x - (x % 5));
+                    t_right.at(x, y) = static_cast<uint8_t>((xr * 17 + y * 31) % 256);
+                }
+            }
+
+            for (CensusType ctype : {CensusType::SymmetricCensus9x7, CensusType::Census9x7}) {
+                for (int iters : {1, 2, 3}) {
+                    for (int radius : {1, 4}) {
+                        for (int mask_mode : {0, 1, 2}) { // 0=mixed, 1=all reliable, 2=all unreliable
+                            PipelineConfig t_cfg;
+                            t_cfg.min_disparity = -4;
+                            t_cfg.max_disparity = 16;
+                            t_cfg.cost.census = ctype;
+                            t_cfg.cost.use_ad = (iters % 2 == 1);
+                            t_cfg.cost.use_grad = (radius == 4);
+                            t_cfg.refine.enable = true;
+                            t_cfg.refine.iterations = iters;
+                            t_cfg.refine.random_radius = radius;
+
+                            PipelineBuffers t_buf;
+                            CostComputer cc_temp;
+                            cc_temp.compute_aux(t_left, t_right, t_cfg, t_buf);
+
+                            t_buf.range.dmin = Image16s(tw, th, -4);
+                            t_buf.range.dmax = Image16s(tw, th, 16);
+                            // Set variable search ranges including some empty / single disparity
+                            for (int y = 0; y < th; ++y) {
+                                for (int x = 0; x < tw; ++x) {
+                                    if ((x + y) % 11 == 0) {
+                                        t_buf.range.dmin.at(x, y) = 0;
+                                        t_buf.range.dmax.at(x, y) = 0; // empty
+                                    } else if ((x + y) % 7 == 0) {
+                                        t_buf.range.dmin.at(x, y) = 2;
+                                        t_buf.range.dmax.at(x, y) = 3; // single
+                                    }
+                                }
+                            }
+
+                            t_buf.disparity = Image32f(tw, th, 0.f);
+                            t_buf.reliable_mask = Image8u1(tw, th, 0);
+                            for (int y = 0; y < th; ++y) {
+                                for (int x = 0; x < tw; ++x) {
+                                    t_buf.disparity.at(x, y) = static_cast<float>((x % 7) - 2);
+                                    if (mask_mode == 0) {
+                                        t_buf.reliable_mask.at(x, y) = ((x + y) % 3 == 0) ? 1 : 0;
+                                    } else if (mask_mode == 1) {
+                                        t_buf.reliable_mask.at(x, y) = 1; // all reliable
+                                    } else {
+                                        t_buf.reliable_mask.at(x, y) = 0; // all unreliable
+                                    }
+                                }
+                            }
+
+                            PipelineBuffers buf_sca = t_buf;
+                            PipelineBuffers buf_avx = t_buf;
+
+                            detail::refine_scalar(t_cfg, buf_sca);
+                            detail::refine_avx2(t_cfg, buf_avx);
+
+                            for (int y = 0; y < th; ++y) {
+                                for (int x = 0; x < tw; ++x) {
+                                    float vs = buf_sca.disparity.at(x, y);
+                                    float va = buf_avx.disparity.at(x, y);
+                                    if (vs != va) {
+                                        std::cerr << "Refiner mismatch at (" << x << "," << y << ") size="
+                                                  << tw << "x" << th << " iters=" << iters << " rad="
+                                                  << radius << " mask=" << mask_mode << ": scalar="
+                                                  << vs << " vs avx2=" << va << "\n";
+                                        return 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        std::cout << "  Refiner comprehensive matrix (sizes, iters, radii, masks, ranges, censuses): 100% bit-exact!\n";
     }
 
     std::cout << "sanity ok\n";
