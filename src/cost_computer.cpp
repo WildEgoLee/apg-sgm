@@ -66,11 +66,17 @@ void CostComputer::build_gray_and_grad(const Image8& src, Image8& gray, Image8& 
     gy = Image8(src.width(), src.height(), 1);
     const int w = src.width();
     const int h = src.height();
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             gray.at(x, y) = src.gray(x, y);
         }
     }
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int gxv = static_cast<int>(gray.sample(x + 1, y)) - static_cast<int>(gray.sample(x - 1, y));
