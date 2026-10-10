@@ -1681,7 +1681,45 @@ int main() {
                 }
             }
         }
-        std::cout << "  CostComputer::compute_aux synthetic matrix: 100% bit-exact!\n";
+
+        // Additional edge case synthetic patterns: constant, checkerboard, equal values, narrow widths
+        const std::vector<std::pair<int, int>> edge_dims = {
+            {5, 5}, {7, 7}, {8, 1}, {1, 8}, {9, 11}, {17, 19}, {24, 8}, {33, 27}
+        };
+        for (const auto& dim : edge_dims) {
+            const int tw = dim.first;
+            const int th = dim.second;
+            // Pattern 1: Constant
+            {
+                Image8 left(tw, th, 1), right(tw, th, 1);
+                left.fill(128); right.fill(128);
+                PipelineBuffers s_buf, p_buf;
+                serial_compute_aux(left, right, cfg, s_buf);
+                cc.compute_aux(left, right, cfg, p_buf);
+                if (s_buf.census_left != p_buf.census_left || s_buf.census_right != p_buf.census_right) {
+                    std::cerr << "constant census mismatch dim=" << tw << "x" << th << "\n";
+                    return 1;
+                }
+            }
+            // Pattern 2: Checkerboard
+            {
+                Image8 left(tw, th, 1), right(tw, th, 1);
+                for (int y = 0; y < th; ++y) {
+                    for (int x = 0; x < tw; ++x) {
+                        left.at(x, y) = ((x + y) % 2 == 0) ? 200 : 50;
+                        right.at(x, y) = ((x + y) % 2 == 0) ? 50 : 200;
+                    }
+                }
+                PipelineBuffers s_buf, p_buf;
+                serial_compute_aux(left, right, cfg, s_buf);
+                cc.compute_aux(left, right, cfg, p_buf);
+                if (s_buf.census_left != p_buf.census_left || s_buf.census_right != p_buf.census_right) {
+                    std::cerr << "checkerboard census mismatch dim=" << tw << "x" << th << "\n";
+                    return 1;
+                }
+            }
+        }
+        std::cout << "  CostComputer::compute_aux synthetic matrix (including edge cases): 100% bit-exact!\n";
     }
 
     std::cout << "sanity ok\n";

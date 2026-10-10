@@ -221,4 +221,99 @@ void compute_volume_packed_avx2(
     }
 }
 
+void build_symmetric_census9x7_avx2(
+    const Image8& gray,
+    std::vector<uint32_t>& c32)
+{
+    const int w = gray.width();
+    const int h = gray.height();
+    c32.assign(w * h, 0);
+    const uint8_t* ptr = gray.data();
+
+    // 31 symmetric pairs in identical order as CostComputer::symmetric_census9x7
+    struct PairOffset {
+        int dx;
+        int dy;
+    };
+    static const auto pairs = []() {
+        std::vector<PairOffset> p;
+        for (int dy = -3; dy <= 3; ++dy) {
+            for (int dx = -4; dx <= 4; ++dx) {
+                if (dy < 0 || (dy == 0 && dx < 0)) {
+                    p.push_back({dx, dy});
+                }
+            }
+        }
+        return p;
+    }();
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
+    for (int y = 0; y < h; ++y) {
+        // Top and bottom border rows: y < 3 || y >= h - 3
+        if (y < 3 || y >= h - 3) {
+            for (int x = 0; x < w; ++x) {
+                c32[y * w + x] = CostComputer::symmetric_census9x7(gray, x, y);
+            }
+            continue;
+        }
+
+        // Left border: x in [0, 3]
+        for (int x = 0; x < std::min(4, w); ++x) {
+            c32[y * w + x] = CostComputer::symmetric_census9x7(gray, x, y);
+        }
+
+        const int row_offset = y * w;
+        const int x_interior_start = 4;
+        const int x_interior_end = w - 5; // inclusive
+
+        if (x_interior_start <= x_interior_end) {
+            const int interior_len = x_interior_end - x_interior_start + 1;
+            const int vec_end = x_interior_start + (interior_len / 8) * 8;
+
+            // Interior AVX2 vector loop: 8 pixels per iteration
+            for (int x = x_interior_start; x < vec_end; x += 8) {
+                const uint8_t* center = ptr + row_offset + x;
+                __m256i accum = _mm256_setzero_si256();
+
+                for (int b = 0; b < 31; ++b) {
+                    const int off_a = pairs[b].dy * w + pairs[b].dx;
+                    const int off_c = -pairs[b].dy * w - pairs[b].dx;
+
+                    // Load 8 bytes (64 bits) for 8 consecutive pixels
+                    __m128i raw_a = _mm_loadu_si64(center + off_a);
+                    __m128i raw_c = _mm_loadu_si64(center + off_c);
+
+                    // Zero-extend uint8 to uint32
+                    __m256i val_a = _mm256_cvtepu8_epi32(raw_a);
+                    __m256i val_c = _mm256_cvtepu8_epi32(raw_c);
+
+                    // a > c comparison (values in [0, 255], signed 32-bit cmpgt is exact)
+                    __m256i cmp = _mm256_cmpgt_epi32(val_a, val_c);
+
+                    // Mask with bit value (1u << b)
+                    __m256i bit_val = _mm256_set1_epi32(1u << b);
+                    __m256i masked = _mm256_and_si256(cmp, bit_val);
+
+                    accum = _mm256_or_si256(accum, masked);
+                }
+
+                // Store 8 x uint32 descriptors
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(&c32[row_offset + x]), accum);
+            }
+
+            // Scalar interior tail and right border
+            for (int x = vec_end; x < w; ++x) {
+                c32[row_offset + x] = CostComputer::symmetric_census9x7(gray, x, y);
+            }
+        } else {
+            // Very narrow image where interior is empty
+            for (int x = 4; x < w; ++x) {
+                c32[row_offset + x] = CostComputer::symmetric_census9x7(gray, x, y);
+            }
+        }
+    }
+}
+
 } // namespace apg::detail

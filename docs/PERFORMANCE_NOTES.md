@@ -1515,3 +1515,42 @@ Rotational interleaving (`BASE -> D -> GD`, `D -> GD -> BASE`, `GD -> BASE -> D`
 - **Pipeline Merge Gate Evaluation**:
   - Requirement: Paired pipeline saving $\ge 140\text{ ms}$, pipeline geomean $\ge 1.005\times$, every scene $\ge 0.995\times$, 0 disparity mismatches.
   - Measured: Paired pipeline saving **+178.77 ms**, geomean **1.01x**, every scene $\ge 1.00x$, 0 disparity mismatches. **PASSED**.
+
+## P3.16d Production: 8-Pixel AVX2 Vectorized Symmetric Census 9x7 with Runtime Dispatch
+
+### 1. Architectural Summary & Scope
+- **Target Stage**: `Aux` preprocessing (`CostComputer::build_census`).
+- **Optimization**:
+  - `CostComputer::symmetric_census9x7`: Hand-vectorized interior loop processing 8 pixels per AVX2 iteration in dedicated TU `src/cost_computer_avx2.cpp`.
+  - For each of the 31 symmetric pairs: 8-byte load from $(+dx, +dy)$ and $(-dx, -dy)$, zero-extension via `_mm256_cvtepu8_epi32`, comparison via `_mm256_cmpgt_epi32`, bitwise AND with $(1u \ll b)$, and accumulative OR into 8 $\times$ `uint32_t` census descriptors.
+  - Border rows ($y < 3$ and $y \ge h - 3$) and margins ($x < 4$ and $x > w - 5$) preserve identical scalar `CostComputer::symmetric_census9x7` logic and boundary handling.
+  - Runtime dispatch via `is_avx2_supported()` with exact scalar fallback.
+  - 64-bit generic Census remains untouched.
+
+### 2. Isolated Census Feasibility Benchmark (16 Threads, 9 Repeats)
+Rotational interleaving between C0 (baseline row-OpenMP scalar), C1 (unrolled scalar), and C2 (8-pixel AVX2 interior):
+
+| Scene | C0 Base (ms) | C2 AVX2 (ms) | Census Speedup | Paired Save (ms) | Parity |
+|:---|---:|---:|:---:|---:|:---:|
+| **ArtL (F)** | 67.80 ms | 5.34 ms | **12.69x** | +63.35 ms | 100% bit-exact (0 diffs) |
+| **Piano (F)** | 223.86 ms | 12.87 ms | **17.40x** | +210.93 ms | 100% bit-exact (0 diffs) |
+| **Vintage (F)** | 232.49 ms | 13.27 ms | **17.52x** | +219.01 ms | 100% bit-exact (0 diffs) |
+| **Scene Geomean** | — | — | **15.70x** | — | **PASS** |
+| **Pooled Sum** | 524.15 ms | 31.48 ms | **16.65x** | **+493.29 ms** | **ALL PASS** |
+
+- **Census Feasibility Gate Evaluation**:
+  - Requirement: Census geomean $\ge 1.50\times$, every scene $\ge 1.30\times$, pooled saving $\ge 180\text{ ms}$. Strong GO: geomean $\ge 2.0\times$, saving $\ge 250\text{ ms}$.
+  - Measured: Geomean **15.70x**, every scene $\ge 12.69\times$, pooled saving **+493.29 ms**. **STRONG GO**.
+
+### 3. Production Paired Full Pipeline Benchmark (16 Threads, Full-Res F, 9 Repeats)
+| Scene | Base Aux (ms) | Cand Aux (ms) | Aux Spd | Aux Save (ms) | Base Pipe (ms) | Cand Pipe (ms) | Pipe Spd | Pipe Save (ms) | Disparity Parity |
+|:---|---:|---:|:---:|---:|---:|---:|:---:|---:|:---:|
+| **ArtL (F)** | 77.96 ms | 11.04 ms | **7.06x** | +65.63 ms | 1,116.56 ms | 1,047.86 ms | **1.07x** | +65.63 ms | 100% bit-exact (0 diffs) |
+| **Piano (F)** | 244.41 ms | 35.25 ms | **6.93x** | +207.43 ms | 4,343.48 ms | 4,133.42 ms | **1.05x** | +207.43 ms | 100% bit-exact (0 diffs) |
+| **Vintage (F)** | 275.16 ms | 35.07 ms | **7.85x** | +236.02 ms | 9,535.44 ms | 9,281.75 ms | **1.03x** | +236.02 ms | 100% bit-exact (0 diffs) |
+| **Scene Geomean** | — | — | **7.27x** | — | — | — | **1.05x** | — | **PASS** |
+| **Pooled Sum** | 597.53 ms | 81.37 ms | **7.34x** | **+509.09 ms** | 14,995.47 ms | 14,463.03 ms | **1.04x** | **+509.09 ms** | **ALL PASS** |
+
+- **Production Merge Gate Evaluation**:
+  - Requirement: Aux saving $\ge 100\text{ ms}$, pipeline saving $\ge 80\text{ ms}$, all scenes non-regressing, 0 disparity mismatches.
+  - Measured: Aux saving **+509.09 ms**, pipeline saving **+509.09 ms** (geomean **1.05x**), all scenes non-regressing ($\ge 1.03\times$), 0 disparity mismatches. **PASSED**.

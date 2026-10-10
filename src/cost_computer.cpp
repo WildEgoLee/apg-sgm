@@ -93,8 +93,12 @@ void CostComputer::build_census(const Image8& gray, CensusType type,
     const int h = gray.height();
     const int n = w * h;
     if (type == CensusType::SymmetricCensus9x7) {
-        c32.assign(n, 0);
         c64.clear();
+        if (detail::is_avx2_supported()) {
+            detail::build_symmetric_census9x7_avx2(gray, c32);
+            return;
+        }
+        c32.assign(n, 0);
 #if defined(_OPENMP)
 #pragma omp parallel for schedule(static)
 #endif
