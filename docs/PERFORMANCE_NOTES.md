@@ -1591,3 +1591,68 @@ Rotational interleaving between C0 (baseline row-OpenMP scalar), C1 (unrolled sc
 - **Production Merge Gate Evaluation**:
   - Requirement: WTA saving $\ge 180\text{ ms}$, pipeline saving $\ge 130\text{ ms}$, 0 disparity mismatches.
   - Measured: WTA saving **+397.10 ms**, pipeline saving **+397.10 ms** (geomean **1.03x**), 0 disparity mismatches. **PASSED**.
+
+## P3.23 Final Stabilization & Performance Closure
+
+### 1. Cumulative Optimization Ladder (P3.0 Baseline to Final Main)
+
+| Stage / Phase | Candidate Description | Merge SHA | Isolated Saving | Pipeline Saving | Cumulative Pooled Runtime | Cumulative Speedup |
+|:---|:---|:---:|---:|---:|---:|:---:|
+| **P3.0 Canonical** | Initial un-optimized baseline | `a547369` | — | — | 59,808 ms (59.81 s) | 1.00x |
+| **Phase A (P3.16b-2)** | Gray (`static`) & Grad (`dynamic,1`) parallelization | `9ef0b81` | +206.65 ms | +178.77 ms | 15,255 ms (15.26 s) | 3.92x |
+| **Phase B (P3.16d)** | 8-lane AVX2 Symmetric Census 9x7 runtime dispatch | `66e2fdc` | +493.29 ms | +509.09 ms | 15,174 ms (15.17 s) | 3.94x |
+| **Phase C (P3.17b)** | Confidence OpenMP row-parallel | NO-GO | +77.92 ms | +77.92 ms | — (< 80 ms gate) | — |
+| **Phase D (P3.18b)** | 16-lane AVX2 Winner-Take-All runtime dispatch | `c93436a` | +397.10 ms | +397.10 ms | 14,632 ms (14.63 s) | 4.09x |
+| **Phase F (P3.19c)** | SGM U16 PathState 16-lane AVX2 | NO-GO | -1,109.12 ms | -1,109.12 ms | — (regression) | — |
+| **Phase G (P3.20a)** | Cross residual attribution II | CLOSED | Projected < 300 ms | — | — | — |
+| **Phase H (P3.21a)** | Refine residual audit II | CLOSED | Projected < 250 ms | — | — | — |
+| **Phase I (P3.22)** | Secondary stage sweep (Cost, RWTA, Prior, Post) | CLOSED | All closed per rules | — | — | — |
+| **Phase J (P3.23a)** | **Canonical Final Milestone (15 Repeats, 16 Threads)** | `c93436a` | — | — | **14,631.54 ms (14.63 s)** | **4.09x** |
+
+### 2. Canonical Final 10-Stage Attribution Profile (16 Threads, 15 Repeats)
+
+- Measured across Middlebury 2014 full-resolution F (`ArtL`, `Piano`, `Vintage`), 16 threads, median of 15 repeats:
+
+| Rank | Stage | ArtL (ms) | Piano (ms) | Vintage (ms) | Pooled (ms) | Share (%) |
+|:---:|:---|---:|---:|---:|---:|:---:|
+| # 1 | **SGM** | 433.69 ms | 1,619.41 ms | 4,118.34 ms | **6,171.44 ms** | 42.20% |
+| # 2 | **Cross** | 257.45 ms | 1,235.75 ms | 3,185.16 ms | **4,678.37 ms** | 31.99% |
+| # 3 | **Refine** | 164.71 ms | 528.65 ms | 594.44 ms | **1,287.80 ms** | 8.81% |
+| # 4 | **Cost** | 71.41 ms | 259.37 ms | 601.43 ms | **932.21 ms** | 6.37% |
+| # 5 | **Right WTA** | 34.67 ms | 131.08 ms | 295.77 ms | **461.52 ms** | 3.16% |
+| # 6 | **Prior** | 37.33 ms | 114.74 ms | 171.40 ms | **323.46 ms** | 2.21% |
+| # 7 | **Confidence** | 38.07 ms | 129.18 ms | 123.46 ms | **290.71 ms** | 1.99% |
+| # 8 | **WTA** | 19.30 ms | 73.77 ms | 167.85 ms | **260.92 ms** | 1.78% |
+| # 9 | **Post** | 17.43 ms | 61.11 ms | 64.28 ms | **142.81 ms** | 0.98% |
+| #10 | **Aux** | 10.33 ms | 32.09 ms | 33.28 ms | **75.70 ms** | 0.52% |
+| — | **Stage Sum** | 1,084.39 ms | 4,185.13 ms | 9,355.41 ms | **14,624.93 ms** | **100.00%** |
+| — | **Median Total** | **1,087.47 ms** | **4,189.49 ms** | **9,354.58 ms** | **14,631.54 ms** | — |
+| — | **MAD (% of Med)** | 10.29 ms (0.95%) | 29.00 ms (0.69%) | 164.46 ms (1.76%) | — | — |
+
+### 3. Thread Scaling & Determinism Stress Validation
+
+- **Thread Scaling (Pooled 3 Full-Res Scenes Total Runtime)**:
+  - **1 Thread**: 54,732.20 ms (54.73 s)
+  - **2 Threads**: 30,623.66 ms (1.79x vs 1T)
+  - **4 Threads**: 20,163.33 ms (2.71x vs 1T)
+  - **8 Threads**: 16,088.19 ms (3.40x vs 1T)
+  - **16 Threads**: 14,313.21 ms (3.82x vs 1T)
+- **Determinism Stress Verification**:
+  - 20 repeated runs on ArtL at 16 threads evaluated via 64-bit FNV-1a disparity hash:
+  - Result: **PASS (100% bit-exact across all 20 runs, hash: 0xd504fa30176bdf9e)**.
+
+### 4. Closed-Track Registry
+
+| Stage / Component | Final Status | Reason & Revisit Condition |
+|:---|:---:|:---|
+| **Aux Gray/Grad** | **MERGED** | Parallelized via OpenMP `static` (gray) and `dynamic,1` (gradient) in PR #21 (`9ef0b81`). |
+| **Census** | **MERGED** | Vectorized via 8-lane AVX2 runtime dispatch in PR #22 (`66e2fdc`). Aux total collapsed to 75.7 ms (0.52% share). |
+| **WTA** | **MERGED** | Vectorized via 16-lane AVX2 runtime dispatch in PR #23 (`c93436a`). WTA collapsed to 260.9 ms (1.78% share). |
+| **Confidence** | **CLOSED** | P3.17b evaluated: +77.92 ms paired saving fell just below strict $\ge 80\text{ ms}$ gate. Revisit if stage runtime $> 350\text{ ms}$. |
+| **SGM** | **CLOSED** | Formal mathematical bound $\text{cur} \le \text{cost} + P_2 \le 375$ verified; U16 PathState 16-lane AVX2 regressed 0.78x–0.87x due to unsigned horizontal reduction and unpack latency. Scalar fringe is 0.00%. Revisit only with hardware support for single-cycle unsigned 16-lane min broadcast (AVX-512). |
+| **Cross** | **CLOSED** | Micro-attribution shows B16 SIMD coverage is 98.32% (scalar fringe 1.68%), exact division is only 6.57% (254 ms total), transient layout transposition exceeds 20% of vertical saving, and scheduler already optimal. Projected gain $< 300\text{ ms}$. |
+| **Refine** | **CLOSED** | Invariant-hoisted dedicated AVX2 TU with hardware `vroundss` already active; total RNG is 99.7 ms, round/clamp is 213 ms, and pixel-parallelism is prohibited by immediate spatial recurrence. Projected gain $< 250\text{ ms}$. |
+| **Cost** | **CLOSED** | AVX2 runtime path achieves 7,875 Mstates/s (6.64x speedup over scalar); remaining runtime is 551 ms. Projected gain $< 150\text{ ms}$. |
+| **Right WTA** | **CLOSED** | Runtime 461.5 ms $< 500\text{ ms}$ re-open threshold. |
+| **Prior** | **CLOSED** | Runtime 323.5 ms $< 450\text{ ms}$ and share 2.21% $< 3\%$. Permanently closed per Section 68. |
+| **Post** | **CLOSED** | Runtime 142.8 ms $< 350\text{ ms}$. Permanently closed per Section 69. |
