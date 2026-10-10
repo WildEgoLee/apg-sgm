@@ -446,5 +446,185 @@ void aggregate_path_packed_avx2(const PipelineConfig& cfg, const Image8& gray,
     }
 }
 
+template <typename TCost>
+void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
+                                      const PackedCostVolume<TCost>& vol,
+                                      Image32f& disp_out,
+                                      Image32f* best_cost,
+                                      Image32f* second_cost) {
+    const int w = vol.width();
+    const int h = vol.height();
+    disp_out = Image32f(w, h, -1.f);
+    if (best_cost) *best_cost = Image32f(w, h, std::numeric_limits<float>::infinity());
+    if (second_cost) *second_cost = Image32f(w, h, std::numeric_limits<float>::infinity());
+
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 4)
+#endif
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const int lo = vol.dmin(x, y);
+            const int hi = vol.dmax(x, y);
+            const int D_p = hi - lo;
+            if (D_p <= 0) continue;
+
+            const TCost* s = vol.slice(x, y);
+            const TCost inv_c = invalid_cost<TCost>();
+
+            int best_d = -1;
+            uint64_t best = UINT64_MAX;
+
+            if constexpr (std::is_same_v<TCost, uint16_t>) {
+                const int vec_len = (D_p / 16) * 16;
+                if (vec_len >= 16) {
+                    __m256i v_min = _mm256_set1_epi16(static_cast<short>(0x7FFF));
+                    for (int di = 0; di < vec_len; di += 16) {
+                        __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(s + di));
+                        __m256i is_inv = _mm256_cmpeq_epi16(v, _mm256_set1_epi16(static_cast<short>(inv_c)));
+                        v = _mm256_blendv_epi8(v, _mm256_set1_epi16(static_cast<short>(0x7FFF)), is_inv);
+                        v_min = _mm256_min_epu16(v_min, v);
+                    }
+
+                    alignas(32) uint16_t red[16];
+                    _mm256_store_si256(reinterpret_cast<__m256i*>(red), v_min);
+                    uint16_t min_vec = 0x7FFF;
+                    for (int i = 0; i < 16; ++i) {
+                        if (red[i] < min_vec) min_vec = red[i];
+                    }
+
+                    if (min_vec < 0x7FFF) {
+                        for (int di = 0; di < vec_len; ++di) {
+                            if (s[di] == min_vec) {
+                                best = min_vec;
+                                best_d = lo + di;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                for (int di = vec_len; di < D_p; ++di) {
+                    const uint16_t c = s[di];
+                    if (c == inv_c) continue;
+                    if (static_cast<uint64_t>(c) < best) {
+                        best = static_cast<uint64_t>(c);
+                        best_d = lo + di;
+                    }
+                }
+            } else {
+                for (int di = 0; di < D_p; ++di) {
+                    const TCost c = s[di];
+                    if (c == inv_c) continue;
+                    if (static_cast<uint64_t>(c) < best) {
+                        best = static_cast<uint64_t>(c);
+                        best_d = lo + di;
+                    }
+                }
+            }
+
+            if (best_d < 0) continue;
+
+            uint64_t second = UINT64_MAX;
+            if constexpr (std::is_same_v<TCost, uint16_t>) {
+                const int vec_len = (D_p / 16) * 16;
+                if (vec_len >= 16) {
+                    const int best_di = best_d - lo;
+                    __m256i v_sec = _mm256_set1_epi16(static_cast<short>(0x7FFF));
+
+                    alignas(32) static const int16_t lane_idx[16] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
+                    const __m256i v_lanes = _mm256_load_si256(reinterpret_cast<const __m256i*>(lane_idx));
+                    const __m256i v_best_di = _mm256_set1_epi16(static_cast<short>(best_di));
+
+                    for (int di = 0; di < vec_len; di += 16) {
+                        __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(s + di));
+                        __m256i v_di = _mm256_add_epi16(_mm256_set1_epi16(static_cast<short>(di)), v_lanes);
+                        __m256i v_diff = _mm256_abs_epi16(_mm256_sub_epi16(v_di, v_best_di));
+                        __m256i excl_mask = _mm256_cmpgt_epi16(_mm256_set1_epi16(2), v_diff);
+
+                        __m256i is_inv = _mm256_cmpeq_epi16(v, _mm256_set1_epi16(static_cast<short>(inv_c)));
+                        __m256i mask_out = _mm256_or_si256(excl_mask, is_inv);
+
+                        v = _mm256_blendv_epi8(v, _mm256_set1_epi16(static_cast<short>(0x7FFF)), mask_out);
+                        v_sec = _mm256_min_epu16(v_sec, v);
+                    }
+
+                    alignas(32) uint16_t red_sec[16];
+                    _mm256_store_si256(reinterpret_cast<__m256i*>(red_sec), v_sec);
+                    uint16_t min_sec = 0x7FFF;
+                    for (int i = 0; i < 16; ++i) {
+                        if (red_sec[i] < min_sec) min_sec = red_sec[i];
+                    }
+                    if (min_sec < 0x7FFF) second = min_sec;
+                }
+
+                for (int di = vec_len; di < D_p; ++di) {
+                    const int d = lo + di;
+                    if (std::abs(d - best_d) <= 1) continue;
+                    const uint16_t c = s[di];
+                    if (c == inv_c) continue;
+                    if (static_cast<uint64_t>(c) < second) {
+                        second = static_cast<uint64_t>(c);
+                    }
+                }
+            } else {
+                for (int di = 0; di < D_p; ++di) {
+                    const int d = lo + di;
+                    if (std::abs(d - best_d) <= 1) continue;
+                    const TCost c = s[di];
+                    if (c == inv_c) continue;
+                    if (static_cast<uint64_t>(c) < second) {
+                        second = static_cast<uint64_t>(c);
+                    }
+                }
+            }
+
+            float dval = static_cast<float>(best_d);
+            if (cfg.post.subpixel && best_d - 1 >= lo && best_d + 1 < hi) {
+                const int di = best_d - lo;
+                if (di > 0 && di + 1 < D_p) {
+                    const TCost c_m = s[di - 1];
+                    const TCost c_0 = s[di];
+                    const TCost c_p = s[di + 1];
+                    if (c_m != inv_c && c_p != inv_c) {
+                        const float cm = static_cast<float>(c_m);
+                        const float c0 = static_cast<float>(c_0);
+                        const float cp = static_cast<float>(c_p);
+                        const float denom = cm - 2.f * c0 + cp;
+                        if (std::abs(denom) > 1e-6f) {
+                            float delta = 0.5f * (cm - cp) / denom;
+                            delta = clampf(delta, -0.5f, 0.5f);
+                            dval += delta;
+                        }
+                    }
+                }
+            }
+
+            disp_out.at(x, y) = dval;
+            if (best_cost) best_cost->at(x, y) = static_cast<float>(best);
+            if (second_cost) {
+                second_cost->at(x, y) = (second < UINT64_MAX)
+                    ? static_cast<float>(second)
+                    : std::numeric_limits<float>::infinity();
+            }
+        }
+    }
+}
+
+void winner_take_all_packed_avx2(const PipelineConfig& cfg,
+                                 const PackedCostVolume16& vol,
+                                 Image32f& disp_out,
+                                 Image32f* best_cost,
+                                 Image32f* second_cost) {
+    winner_take_all_packed_avx2_impl(cfg, vol, disp_out, best_cost, second_cost);
+}
+
+void winner_take_all_packed_avx2(const PipelineConfig& cfg,
+                                 const PackedCostVolume32& vol,
+                                 Image32f& disp_out,
+                                 Image32f* best_cost,
+                                 Image32f* second_cost) {
+    winner_take_all_packed_avx2_impl(cfg, vol, disp_out, best_cost, second_cost);
+}
+
 } // namespace detail
 } // namespace apg

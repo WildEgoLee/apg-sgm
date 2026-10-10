@@ -1722,6 +1722,140 @@ int main() {
         std::cout << "  CostComputer::compute_aux synthetic matrix (including edge cases): 100% bit-exact!\n";
     }
 
+    // SgmOptimizer winner_take_all_packed bit-exact parity test
+    {
+        std::cout << "Testing SgmOptimizer::winner_take_all_packed bit-exact parity...\n";
+        auto wta_scalar_reference = [](const PipelineConfig& cfg, const PackedCostVolume16& vol,
+                                       Image32f& disp_out, Image32f* best_cost, Image32f* second_cost) {
+            const int w = vol.width();
+            const int h = vol.height();
+            disp_out = Image32f(w, h, -1.f);
+            if (best_cost) *best_cost = Image32f(w, h, std::numeric_limits<float>::infinity());
+            if (second_cost) *second_cost = Image32f(w, h, std::numeric_limits<float>::infinity());
+
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const int lo = vol.dmin(x, y);
+                    const int hi = vol.dmax(x, y);
+                    const int D_p = hi - lo;
+                    if (D_p <= 0) continue;
+
+                    const uint16_t* s = vol.slice(x, y);
+                    const uint16_t inv_c = kInvalidCost;
+                    int best_d = -1;
+                    uint32_t best = UINT32_MAX;
+
+                    for (int di = 0; di < D_p; ++di) {
+                        const uint16_t c = s[di];
+                        if (c == inv_c) continue;
+                        if (c < best) {
+                            best = c;
+                            best_d = lo + di;
+                        }
+                    }
+
+                    if (best_d < 0) continue;
+
+                    uint32_t second = UINT32_MAX;
+                    for (int di = 0; di < D_p; ++di) {
+                        const int d = lo + di;
+                        if (std::abs(d - best_d) <= 1) continue;
+                        const uint16_t c = s[di];
+                        if (c == inv_c) continue;
+                        if (c < second) {
+                            second = c;
+                        }
+                    }
+
+                    float dval = static_cast<float>(best_d);
+                    if (cfg.post.subpixel && best_d - 1 >= lo && best_d + 1 < hi) {
+                        const int di = best_d - lo;
+                        if (di > 0 && di + 1 < D_p) {
+                            const uint16_t c_m = s[di - 1];
+                            const uint16_t c_0 = s[di];
+                            const uint16_t c_p = s[di + 1];
+                            if (c_m != inv_c && c_p != inv_c) {
+                                const float cm = static_cast<float>(c_m);
+                                const float c0 = static_cast<float>(c_0);
+                                const float cp = static_cast<float>(c_p);
+                                const float denom = cm - 2.f * c0 + cp;
+                                if (std::abs(denom) > 1e-6f) {
+                                    float delta = 0.5f * (cm - cp) / denom;
+                                    delta = clampf(delta, -0.5f, 0.5f);
+                                    dval += delta;
+                                }
+                            }
+                        }
+                    }
+
+                    disp_out.at(x, y) = dval;
+                    if (best_cost) best_cost->at(x, y) = static_cast<float>(best);
+                    if (second_cost) {
+                        second_cost->at(x, y) = (second < UINT32_MAX)
+                            ? static_cast<float>(second)
+                            : std::numeric_limits<float>::infinity();
+                    }
+                }
+            }
+        };
+
+        SgmOptimizer opt;
+        PipelineConfig cfg = PipelineConfig::from_mode(QualityMode::HighQuality, 32);
+
+        const std::vector<std::pair<int, int>> wta_dims = {
+            {3, 3}, {7, 5}, {16, 16}, {31, 23}, {64, 48}
+        };
+
+        for (const auto& dim : wta_dims) {
+            const int tw = dim.first;
+            const int th = dim.second;
+            SearchRange rng;
+            rng.dmin = Image16s(tw, th, 0);
+            rng.dmax = Image16s(tw, th, 32);
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    rng.dmin.at(x, y) = static_cast<int16_t>((x + y) % 5);
+                    rng.dmax.at(x, y) = static_cast<int16_t>(rng.dmin.at(x, y) + 16 + (x * 3 + y * 7) % 17);
+                }
+            }
+
+            auto layout = PackedVolumeLayout::from_range(rng);
+            PackedCostVolume16 vol;
+            vol.allocate_for_overwrite(layout);
+
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    uint16_t* s = vol.slice(x, y);
+                    const int D_p = vol.dmax(x, y) - vol.dmin(x, y);
+                    for (int di = 0; di < D_p; ++di) {
+                        if ((x + y + di) % 13 == 0) {
+                            s[di] = kInvalidCost;
+                        } else {
+                            s[di] = static_cast<uint16_t>((x * 19 + y * 29 + di * 31) % 500 + 10);
+                        }
+                    }
+                }
+            }
+
+            Image32f d_ref, d_test, b_ref, b_test, s_ref, s_test;
+            wta_scalar_reference(cfg, vol, d_ref, &b_ref, &s_ref);
+            opt.winner_take_all_packed(cfg, vol, d_test, &b_test, &s_test);
+
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    if (d_ref.at(x, y) != d_test.at(x, y) ||
+                        b_ref.at(x, y) != b_test.at(x, y) ||
+                        s_ref.at(x, y) != s_test.at(x, y)) {
+                        std::cerr << "winner_take_all_packed mismatch at (" << x << "," << y << ") dim="
+                                  << tw << "x" << th << "\n";
+                        return 1;
+                    }
+                }
+            }
+        }
+        std::cout << "  SgmOptimizer::winner_take_all_packed synthetic matrix: 100% bit-exact!\n";
+    }
+
     std::cout << "sanity ok\n";
     return 0;
 }

@@ -631,6 +631,10 @@ void SgmOptimizer::winner_take_all_packed(const PipelineConfig& cfg,
                                           Image32f& disp_out,
                                           Image32f* best_cost,
                                           Image32f* second_cost) const {
+    if (detail::is_avx2_supported()) {
+        detail::winner_take_all_packed_avx2(cfg, vol, disp_out, best_cost, second_cost);
+        return;
+    }
     wta_packed_impl(cfg, vol, disp_out, best_cost, second_cost);
 }
 
@@ -639,6 +643,10 @@ void SgmOptimizer::winner_take_all_packed(const PipelineConfig& cfg,
                                           Image32f& disp_out,
                                           Image32f* best_cost,
                                           Image32f* second_cost) const {
+    if (detail::is_avx2_supported()) {
+        detail::winner_take_all_packed_avx2(cfg, vol, disp_out, best_cost, second_cost);
+        return;
+    }
     wta_packed_impl(cfg, vol, disp_out, best_cost, second_cost);
 }
 
