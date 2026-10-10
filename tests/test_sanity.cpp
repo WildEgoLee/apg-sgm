@@ -1589,6 +1589,101 @@ int main() {
         std::cout << "  PostProcessor synthetic matrix (dims, lr_checks, gaps, radii, priors): 100% bit-exact!\n";
     }
 
+    // CostComputer Aux compute_aux bit-exact parity test
+    {
+        std::cout << "Testing CostComputer::compute_aux bit-exact parity (serial vs OpenMP parallel)...\n";
+        auto serial_compute_aux = [](const Image8& left, const Image8& right, const PipelineConfig& cfg,
+                                     PipelineBuffers& buf) {
+            buf.left = left;
+            buf.right = right;
+            auto serial_build = [](const Image8& src, Image8& gray, Image8& gx, Image8& gy) {
+                gray = Image8(src.width(), src.height(), 1);
+                gx = Image8(src.width(), src.height(), 1);
+                gy = Image8(src.width(), src.height(), 1);
+                const int w = src.width();
+                const int h = src.height();
+                for (int y = 0; y < h; ++y) {
+                    for (int x = 0; x < w; ++x) {
+                        gray.at(x, y) = src.gray(x, y);
+                    }
+                }
+                for (int y = 0; y < h; ++y) {
+                    for (int x = 0; x < w; ++x) {
+                        const int gxv = static_cast<int>(gray.sample(x + 1, y)) - static_cast<int>(gray.sample(x - 1, y));
+                        const int gyv = static_cast<int>(gray.sample(x, y + 1)) - static_cast<int>(gray.sample(x, y - 1));
+                        gx.at(x, y) = static_cast<uint8_t>(clampi(std::abs(gxv), 0, 255));
+                        gy.at(x, y) = static_cast<uint8_t>(clampi(std::abs(gyv), 0, 255));
+                    }
+                }
+            };
+            serial_build(left, buf.left_gray, buf.left_gx, buf.left_gy);
+            serial_build(right, buf.right_gray, buf.right_gx, buf.right_gy);
+
+            const int wl = buf.left_gray.width(), hl = buf.left_gray.height();
+            buf.census_left.assign(wl * hl, 0);
+            for (int y = 0; y < hl; ++y) {
+                for (int x = 0; x < wl; ++x) {
+                    buf.census_left[y * wl + x] = CostComputer::symmetric_census9x7(buf.left_gray, x, y);
+                }
+            }
+            const int wr = buf.right_gray.width(), hr = buf.right_gray.height();
+            buf.census_right.assign(wr * hr, 0);
+            for (int y = 0; y < hr; ++y) {
+                for (int x = 0; x < wr; ++x) {
+                    buf.census_right[y * wr + x] = CostComputer::symmetric_census9x7(buf.right_gray, x, y);
+                }
+            }
+        };
+
+        CostComputer cc;
+        PipelineConfig cfg = PipelineConfig::from_mode(QualityMode::HighQuality, 32);
+
+        const std::vector<std::pair<int, int>> test_dims = {
+            {1, 1}, {2, 2}, {3, 7}, {8, 8}, {15, 17}, {64, 48}, {128, 128}, {301, 203}
+        };
+
+        for (const auto& dim : test_dims) {
+            const int tw = dim.first;
+            const int th = dim.second;
+            for (int channels : {1, 3}) {
+                Image8 left(tw, th, channels);
+                Image8 right(tw, th, channels);
+                for (int y = 0; y < th; ++y) {
+                    for (int x = 0; x < tw; ++x) {
+                        for (int c = 0; c < channels; ++c) {
+                            left.at(x, y, c) = static_cast<uint8_t>((x * 19 + y * 37 + c * 53 + (x ^ y)) & 0xFF);
+                            right.at(x, y, c) = static_cast<uint8_t>((x * 23 + y * 41 + c * 47 + (x * y)) & 0xFF);
+                        }
+                    }
+                }
+
+                PipelineBuffers s_buf, p_buf;
+                serial_compute_aux(left, right, cfg, s_buf);
+                cc.compute_aux(left, right, cfg, p_buf);
+
+                for (int y = 0; y < th; ++y) {
+                    for (int x = 0; x < tw; ++x) {
+                        if (s_buf.left_gray.at(x, y) != p_buf.left_gray.at(x, y) ||
+                            s_buf.left_gx.at(x, y) != p_buf.left_gx.at(x, y) ||
+                            s_buf.left_gy.at(x, y) != p_buf.left_gy.at(x, y) ||
+                            s_buf.right_gray.at(x, y) != p_buf.right_gray.at(x, y) ||
+                            s_buf.right_gx.at(x, y) != p_buf.right_gx.at(x, y) ||
+                            s_buf.right_gy.at(x, y) != p_buf.right_gy.at(x, y)) {
+                            std::cerr << "compute_aux mismatch at (" << x << "," << y << ") dim="
+                                      << tw << "x" << th << " channels=" << channels << "\n";
+                            return 1;
+                        }
+                    }
+                }
+                if (s_buf.census_left != p_buf.census_left || s_buf.census_right != p_buf.census_right) {
+                    std::cerr << "compute_aux census mismatch dim=" << tw << "x" << th << "\n";
+                    return 1;
+                }
+            }
+        }
+        std::cout << "  CostComputer::compute_aux synthetic matrix: 100% bit-exact!\n";
+    }
+
     std::cout << "sanity ok\n";
     return 0;
 }

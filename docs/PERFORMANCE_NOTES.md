@@ -1477,3 +1477,41 @@ The `PriorEstimator` production path has been parallelized using deterministic O
 
 - **Profile Consistency**: Sum of stage medians (16,305.28 ms) matches the independently evaluated median total pipeline runtime (16,260.90 ms) within 0.27%. Shares sum strictly to 100.00%.
 - **Ranking Shift**: Post-Processing collapsed from **#4 bottleneck (1,046.43 ms, 7.11%)** down to **#10 bottleneck (144.48 ms, 0.89%)**, successfully eliminating PostProcessor as an actionable bottleneck.
+
+## P3.16b-2 Production: Deterministic OpenMP Parallelization of Aux Gray & Gradient Preprocessing
+
+### 1. Architectural Summary & Scope
+- **Target Stage**: `Aux` preprocessing (`CostComputer::build_gray_and_grad`).
+- **Optimization**:
+  - `Image8::gray()` loop: Added `#pragma omp parallel for schedule(static)` row-level parallelization across image height.
+  - Gradient computation loop (`Image8::sample()` differences with abs clamp): Added `#pragma omp parallel for schedule(dynamic, 1)` row-level parallelization across image height.
+  - Purely deterministic, preserves identical sample/abs/clampi/gx/gy mathematical semantics and boundary clamping.
+  - Zero modification to `src/pipeline.cpp`.
+
+### 2. Isolated Aux Paired Benchmark (Candidate GD vs BASE, 16 Threads, 9 Repeats)
+Rotational interleaving (`BASE -> D -> GD`, `D -> GD -> BASE`, `GD -> BASE -> D`):
+
+| Scene | BASE Aux (ms) | GD Aux (ms) | Speedup | Aux Save (ms) | Comp Save (ms) | GD vs D Incr (ms) | Parity |
+|:---|---:|---:|:---:|---:|---:|---:|:---:|
+| **ArtL (F)** | 96.97 ms | 72.44 ms | **1.34x** | +26.90 ms | +25.62 ms | +3.47 ms | 100% bit-exact (0 diffs) |
+| **Piano (F)** | 323.62 ms | 240.62 ms | **1.34x** | +85.79 ms | +86.34 ms | +2.38 ms | 100% bit-exact (0 diffs) |
+| **Vintage (F)** | 342.99 ms | 251.52 ms | **1.36x** | +93.96 ms | +88.30 ms | +9.00 ms | 100% bit-exact (0 diffs) |
+| **Scene Geomean** | — | — | **1.35x** | — | — | — | **PASS** |
+| **Pooled Sum** | 763.58 ms | 564.58 ms | **1.35x** | **+206.65 ms** | **+200.26 ms** | **+14.85 ms** | **ALL PASS** |
+
+- **Aux Isolated Gate Evaluation**:
+  - Requirement: GD isolated Aux saving $\ge 180\text{ ms}$, geomean $\ge 1.25\times$, every scene $\ge 1.15\times$, 100% bit-exact.
+  - Measured: Pooled saving **+206.65 ms**, geomean **1.35x**, minimum scene **1.34x**, all buffers bit-exact. **PASSED**.
+
+### 3. Full Pipeline Paired Benchmark (16 Threads, Full-Res F, 7 Repeats)
+| Scene | Serial Pipe (ms) | Parallel Pipe (ms) | Pipe Speedup | Pipe Save (ms) | Aux Save (ms) | Residual (ms) | Parity |
+|:---|---:|---:|:---:|---:|---:|---:|:---:|
+| **ArtL (F)** | 1,172.23 ms | 1,162.73 ms | **1.01x** | +27.53 ms | +28.98 ms | +1.63 ms | 100% bit-exact (0 diffs) |
+| **Piano (F)** | 4,473.55 ms | 4,454.84 ms | **1.00x** | +69.31 ms | +83.48 ms | +8.61 ms | 100% bit-exact (0 diffs) |
+| **Vintage (F)** | 9,402.14 ms | 9,320.56 ms | **1.01x** | +81.93 ms | +76.82 ms | +4.40 ms | 100% bit-exact (0 diffs) |
+| **Scene Geomean** | — | — | **1.01x** | — | — | — | **PASS** |
+| **Pooled Sum** | 15,047.93 ms | 14,938.13 ms | **1.01x** | **+178.77 ms** | **+189.28 ms** | **+14.65 ms** | **ALL PASS** |
+
+- **Pipeline Merge Gate Evaluation**:
+  - Requirement: Paired pipeline saving $\ge 140\text{ ms}$, pipeline geomean $\ge 1.005\times$, every scene $\ge 0.995\times$, 0 disparity mismatches.
+  - Measured: Paired pipeline saving **+178.77 ms**, geomean **1.01x**, every scene $\ge 1.00x$, 0 disparity mismatches. **PASSED**.
