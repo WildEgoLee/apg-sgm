@@ -4,6 +4,10 @@
 #include <algorithm>
 #include <cmath>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+
 namespace apg {
 
 std::vector<SupportMatch> PriorEstimator::extract_supports(const PipelineConfig& cfg,
@@ -25,68 +29,83 @@ std::vector<SupportMatch> PriorEstimator::extract_supports(const PipelineConfig&
     std::vector<std::vector<SupportMatch>> cell_candidates(n_cells);
     const int max_cand_per_cell = std::max(8, (hard_max * 2 + n_cells - 1) / std::max(1, n_cells));
 
-    for (int y = 2; y < h - 2; y += step) {
-        const int gy = clampi(y / cell, 0, gh - 1);
-        for (int x = 2; x < w - 2; x += step) {
-            const int gx = clampi(x / cell, 0, gw - 1);
-            const int ci = gy * gw + gx;
-            if (static_cast<int>(cell_candidates[ci].size()) >= max_cand_per_cell) continue;
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(dynamic, 1)
+#endif
+    for (int ci = 0; ci < n_cells; ++ci) {
+        const int gx = ci % gw;
+        const int gy = ci / gw;
 
-            const int tex = static_cast<int>(buf.left_gx.at(x, y)) + static_cast<int>(buf.left_gy.at(x, y));
-            if (tex < cfg.prior.texture_threshold) continue;
+        const int y_min = std::max(2, gy * cell);
+        const int y_max = std::min(h - 2, (gy + 1) * cell);
+        const int y_start = (y_min % 2 != 0) ? (y_min + 1) : y_min;
 
-            int best_d = d0;
-            int best = 255, second = 255;
-            for (int d = d0; d < d1; ++d) {
-                const int xr = x - d;
-                if (xr < 0 || xr >= w) continue;
-                int c = 0;
-                if (sym) {
-                    c = CostComputer::popcount32(buf.census_left[y * w + x] ^
-                                                 buf.census_right[y * w + xr]);
-                } else {
-                    c = CostComputer::popcount64(buf.census_left64[y * w + x] ^
-                                                 buf.census_right64[y * w + xr]);
+        const int x_min = std::max(2, gx * cell);
+        const int x_max = std::min(w - 2, (gx + 1) * cell);
+        const int x_start = (x_min % 2 != 0) ? (x_min + 1) : x_min;
+
+        auto& dst = cell_candidates[ci];
+
+        for (int y = y_start; y < y_max; y += step) {
+            for (int x = x_start; x < x_max; x += step) {
+                if (static_cast<int>(dst.size()) >= max_cand_per_cell) continue;
+
+                const int tex = static_cast<int>(buf.left_gx.at(x, y)) + static_cast<int>(buf.left_gy.at(x, y));
+                if (tex < cfg.prior.texture_threshold) continue;
+
+                int best_d = d0;
+                int best = 255, second = 255;
+                for (int d = d0; d < d1; ++d) {
+                    const int xr = x - d;
+                    if (xr < 0 || xr >= w) continue;
+                    int c = 0;
+                    if (sym) {
+                        c = CostComputer::popcount32(buf.census_left[y * w + x] ^
+                                                     buf.census_right[y * w + xr]);
+                    } else {
+                        c = CostComputer::popcount64(buf.census_left64[y * w + x] ^
+                                                     buf.census_right64[y * w + xr]);
+                    }
+                    if (c < best) {
+                        second = best;
+                        best = c;
+                        best_d = d;
+                    } else if (c < second) {
+                        second = c;
+                    }
                 }
-                if (c < best) {
-                    second = best;
-                    best = c;
-                    best_d = d;
-                } else if (c < second) {
-                    second = c;
+                if (second <= 0) continue;
+                const float uniq = static_cast<float>(second - best) / static_cast<float>(second);
+                if (uniq < cfg.prior.uniqueness_ratio) continue;
+
+                const int xr = x - best_d;
+                if (xr < 1 || xr >= w - 1) continue;
+                int rbest = 255, rbest_d = 0;
+                for (int d = d0; d < d1; ++d) {
+                    const int xl = xr + d;
+                    if (xl < 0 || xl >= w) continue;
+                    int c = 0;
+                    if (sym) {
+                        c = CostComputer::popcount32(buf.census_left[y * w + xl] ^
+                                                     buf.census_right[y * w + xr]);
+                    } else {
+                        c = CostComputer::popcount64(buf.census_left64[y * w + xl] ^
+                                                     buf.census_right64[y * w + xr]);
+                    }
+                    if (c < rbest) {
+                        rbest = c;
+                        rbest_d = d;
+                    }
                 }
+                if (std::abs(rbest_d - best_d) > cfg.prior.lr_max_diff) continue;
+
+                SupportMatch m;
+                m.x = x;
+                m.y = y;
+                m.disparity = static_cast<float>(best_d);
+                m.confidence = uniq;
+                dst.push_back(m);
             }
-            if (second <= 0) continue;
-            const float uniq = static_cast<float>(second - best) / static_cast<float>(second);
-            if (uniq < cfg.prior.uniqueness_ratio) continue;
-
-            const int xr = x - best_d;
-            if (xr < 1 || xr >= w - 1) continue;
-            int rbest = 255, rbest_d = 0;
-            for (int d = d0; d < d1; ++d) {
-                const int xl = xr + d;
-                if (xl < 0 || xl >= w) continue;
-                int c = 0;
-                if (sym) {
-                    c = CostComputer::popcount32(buf.census_left[y * w + xl] ^
-                                                 buf.census_right[y * w + xr]);
-                } else {
-                    c = CostComputer::popcount64(buf.census_left64[y * w + xl] ^
-                                                 buf.census_right64[y * w + xr]);
-                }
-                if (c < rbest) {
-                    rbest = c;
-                    rbest_d = d;
-                }
-            }
-            if (std::abs(rbest_d - best_d) > cfg.prior.lr_max_diff) continue;
-
-            SupportMatch m;
-            m.x = x;
-            m.y = y;
-            m.disparity = static_cast<float>(best_d);
-            m.confidence = uniq;
-            cell_candidates[ci].push_back(m);
         }
     }
 
@@ -281,6 +300,9 @@ void PriorEstimator::interpolate_prior(const std::vector<SupportMatch>& supports
         if (!fill_grids()) break;
     }
 
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (int y = 0; y < h; ++y) {
         const float fy = (static_cast<float>(y) + 0.5f) / cell - 0.5f;
         const int gy = clampi(static_cast<int>(std::floor(fy)), 0, gh - 1);
@@ -349,6 +371,9 @@ void PriorEstimator::apply_search_range(const PipelineConfig& cfg, PipelineBuffe
     const int default_R = cfg.prior.search_radius;
     const int global_D = cfg.max_disparity - cfg.min_disparity;
 
+#if defined(_OPENMP)
+#pragma omp parallel for schedule(static)
+#endif
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const float dp = buf.d_prior.at(x, y);

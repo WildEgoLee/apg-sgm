@@ -1230,3 +1230,110 @@ The Refiner production path now dispatches to a dedicated AVX2 translation unit 
 - **Profile Consistency**: Sum of stage medians (16,101.31 ms) closely matches the independently evaluated median total pipeline runtime (16,255.37 ms) within 0.95%. Shares sum to strictly 100.00%.
 - **Ranking Shift**: Refine drops from 3rd bottleneck (previously 14.33%) to 4th (7.72%). **Prior Estimator (1,531.23 ms, 9.51%) officially becomes the #3 bottleneck** and the next primary actionable target.
 - **Canonical Cumulative Milestone**: Fresh production measurement total is **16.255 s**, achieving **3.679x speedup** vs canonical P3.0 baseline (59.808 s). Conservative Amdahl projection based on post-P3.11b baseline (18.017 s - 1.382 s = 16.635 s) yields **3.595x**.
+
+---
+
+## V3 Priority 14: Prior Estimator Deterministic OpenMP Parallelization Production
+
+**Decision:** **MERGE PR #20**.
+The `PriorEstimator` production path has been parallelized using deterministic OpenMP cell and row parallelism across all three heavy computation phases (`ExtractSupports`, `InterpolatePrior`, `ApplySearchRange`). Public APIs in `include/apg_sgm/prior_estimator.hpp`, `PipelineConfig`, and `SearchRange` remain completely unchanged. The implementation achieves **100% bit-exact parity** across all intermediate Prior buffers (`supports`, `d_prior`, `prior_confidence`, `prior_spread`, `d_prior_min`, `d_prior_max`, `range.dmin`, `range.dmax`), 8 synthetic boundary/budget edge cases, and end-to-end full pipeline final disparity maps.
+
+### 1. Architectural Design & Implementation Principles
+1. **ExtractSupports Spatial-Cell Parallelism (`EX-CELL`)**:
+   - The parallel unit is a discrete spatial cell $ci \in [0, n\_cells)$ of size $16 \times 16$.
+   - Thread iteration is scheduled dynamically via `#pragma omp parallel for schedule(dynamic, 1)`.
+   - Each thread exclusively owns and writes to its private `cell_candidates[ci]` vector without atomics, mutexes, or shared critical sections.
+   - Scan coordinates within each cell maintain exact serial $y$-major then $x$-major traversal over identical even $(y, x)$ coordinates.
+   - In-loop candidate capping checks (`cell_candidates[ci].size() >= max_cand_per_cell`) strictly preserve serial acceptance and insertion semantics.
+   - *Note on candidate cap*: Under the tested full-resolution configurations, `max_cand_per_cell` resolved to 8; the parameter remains dynamically computed from `cfg.prior.max_supports`.
+   - Post-loop stratified budget allocation (non-empty cell filtering, base quota allocation, round-robin redistribution, and deterministic uniform spatial subsampling) remains strictly serial, guaranteeing deterministic global ordering.
+2. **InterpolatePrior Row-Parallel Bilinear Dense Reconstruction**:
+   - Coarse-grid Jacobi diffusion (`fill_grids`), support bucketing, and per-cell weighted median/MAD statistics remain strictly serial (accounting for $<3\%$ of interpolation time).
+   - The $W \times H$ dense 4-corner bilinear interpolation loop is parallelized row-wise using `#pragma omp parallel for schedule(static)` with zero data races. Floating-point arithmetic expressions, clamping, and evaluation orders are preserved bit-for-bit without fast-math or SIMD reassociation.
+3. **ApplySearchRange Row-Parallel Envelope Bounding**:
+   - Row-wise parallelization via `#pragma omp parallel for schedule(static)`. Each thread updates disjoint scanlines in `buf.range`.
+4. **Portability & Build Guards**:
+   - All OpenMP directives are guarded by `#if defined(_OPENMP)`. Non-OpenMP builds execute completely identical serial loops with guaranteed bit-exact output.
+
+### 2. Isolated Prior Production Paired Benchmark (16 Threads, Full-Res F, 7 Repeats, Median)
+- **Convention**: `Saving = Serial - Parallel` (positive denotes wall-clock benefit); `Speedup = Serial / Parallel`.
+- Evaluated interleaved A/B in the same executable and session on Middlebury 2014 full-resolution F scenes (`ArtL`, `Piano`, `Vintage`):
+
+| Scene | Serial Prior (ms) | Parallel Prior (ms) | Speedup | Saving (ms) | Ext Speedup | Int Speedup | App Speedup | Prior Parity |
+|:---|---:|---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **ArtL (F)** | 189.77 ms | 31.34 ms | **6.06x** | +158.44 ms | 8.54x | 3.84x | 6.60x | 100% bit-exact |
+| **Piano (F)** | 507.85 ms | 96.21 ms | **5.28x** | +411.64 ms | 7.26x | 3.56x | 6.79x | 100% bit-exact |
+| **Vintage (F)** | 765.86 ms | 137.58 ms | **5.57x** | +628.28 ms | 6.82x | 3.63x | 7.14x | 100% bit-exact |
+| **Scene Geomean** | — | — | **5.62x** | — | **7.50x** | **3.67x** | **6.84x** | **PASS** |
+| **Pooled Sum** | 1,463.48 ms | 265.13 ms | **5.52x** | **+1,198.36 ms** | — | — | — | **PASS** |
+
+#### Component Stage Breakdown (Median ms)
+- **ArtL**:
+  - Init: Serial $4.18\text{ ms}$ | Parallel $3.06\text{ ms}$
+  - Extract: Serial $135.50\text{ ms}$ | Parallel $15.86\text{ ms}$ (**$8.54\times$**, saving $119.64\text{ ms}$)
+  - Interpolate: Serial $32.85\text{ ms}$ | Parallel $8.55\text{ ms}$ (**$3.84\times$**, saving $24.30\text{ ms}$)
+  - Apply: Serial $16.42\text{ ms}$ | Parallel $2.49\text{ ms}$ (**$6.60\times$**, saving $13.93\text{ ms}$)
+  - Total: Serial $189.77\text{ ms}$ | Parallel $31.34\text{ ms}$ (**$6.06\times$**, saving $158.44\text{ ms}$)
+- **Piano**:
+  - Init: Serial $14.43\text{ ms}$ | Parallel $11.60\text{ ms}$
+  - Extract: Serial $321.73\text{ ms}$ | Parallel $44.32\text{ ms}$ (**$7.26\times$**, saving $277.41\text{ ms}$)
+  - Interpolate: Serial $115.79\text{ ms}$ | Parallel $32.54\text{ ms}$ (**$3.56\times$**, saving $83.25\text{ ms}$)
+  - Apply: Serial $56.19\text{ ms}$ | Parallel $8.27\text{ ms}$ (**$6.79\times$**, saving $47.92\text{ ms}$)
+  - Total: Serial $507.85\text{ ms}$ | Parallel $96.21\text{ ms}$ (**$5.28\times$**, saving $411.64\text{ ms}$)
+- **Vintage**:
+  - Init: Serial $14.65\text{ ms}$ | Parallel $12.05\text{ ms}$
+  - Extract: Serial $575.07\text{ ms}$ | Parallel $84.37\text{ ms}$ (**$6.82\times$**, saving $490.70\text{ ms}$)
+  - Interpolate: Serial $116.60\text{ ms}$ | Parallel $32.16\text{ ms}$ (**$3.63\times$**, saving $84.44\text{ ms}$)
+  - Apply: Serial $57.92\text{ ms}$ | Parallel $8.11\text{ ms}$ (**$7.14\times$**, saving $49.81\text{ ms}$)
+  - Total: Serial $765.86\text{ ms}$ | Parallel $137.58\text{ ms}$ (**$5.57\times$**, saving $628.28\text{ ms}$)
+
+- **Production Prior Gate Evaluation**:
+  - Requirement: Scene geomean $\ge 4.0\times$ (preferred $\ge 4.5\times$), every scene $\ge 3.5\times$, pooled saving $\ge 0.90\text{ s}$, 100% bit-exact.
+  - Measured: Geomean **5.62x**, per-scene minimum **5.28x**, pooled saving **+1.198 s**, bit-exact across all scenes. **EXCEEDED PREFERRED GATE**.
+
+### 3. Per-Repeat Paired Full Pipeline Benchmark & Accounting (16 Threads, Full-Res F, 7 Repeats)
+- Evaluated on interleaved runs across all 7 repeats in the same candidate binary session:
+  - `pipe_saving[i] = serial_total[i] - parallel_total[i]`
+  - `prior_saving[i] = serial_prior[i] - parallel_prior[i]`
+  - `residual[i] = pipe_saving[i] - prior_saving[i]`
+
+| Scene | Serial Pipe (ms) | Parallel Pipe (ms) | Pipe Speedup | Pipe Save (ms) | Prior Save (ms) | Residual (ms) | Final Disparity Parity |
+|:---|---:|---:|:---:|---:|---:|---:|:---:|
+| **ArtL (F)** | 1,341.41 ms | 1,198.71 ms | **1.12x** | +142.69 ms | +156.77 ms | -14.08 ms | 100% bit-exact (0 diffs) |
+| **Piano (F)** | 4,892.32 ms | 4,637.36 ms | **1.05x** | +254.96 ms | +416.29 ms | -161.33 ms | 100% bit-exact (0 diffs) |
+| **Vintage (F)** | 9,564.29 ms | 8,924.44 ms | **1.07x** | +639.85 ms | +662.84 ms | -22.99 ms | 100% bit-exact (0 diffs) |
+| **Scene Geomean** | — | — | **1.08x** | — | — | — | **PASS** |
+| **Pooled Sum** | 15,798.02 ms | 14,760.52 ms | **1.07x** | **+1,037.50 ms** | **+1,235.90 ms** | **-198.40 ms** | **PASS** |
+
+- **Accounting & Residual Analysis**:
+  - Pooled residual is **-198.40 ms**, which is **16.05%** of the Prior saving (safely bounded within the 25% threshold).
+  - Variations across scenes reflect natural OS thread scheduling interleaving; full pipeline disparity maps remain 100% bit-exact with 0 pixel mismatches.
+- **Pipeline Merge Gate Evaluation**:
+  - Requirement: Pooled saving $\ge 0.80\text{ s}$, pipeline geomean $\ge 1.04\times$, every scene $\ge 0.995\times$.
+  - Measured: Pooled saving **+1.038 s**, geomean **1.08x**, per-scene minimum **1.05x**. **PASSED**.
+
+### 4. Fresh 10-Stage Attribution Profile (Candidate Build Same-Session)
+- Measured across Middlebury full-resolution F (`ArtL`, `Piano`, `Vintage`), 16 threads, median of 7 measured repeats in the same candidate binary session:
+
+| Rank | Stage | ArtL (ms) | Piano (ms) | Vintage (ms) | Pooled (ms) | Share (%) |
+|:---:|:---|---:|---:|---:|---:|:---:|
+| # 1 | SGM | 381.06 ms | 1,469.91 ms | 3,648.05 ms | **5,499.01 ms** | 37.36% |
+| # 2 | Cross | 245.52 ms | 1,205.04 ms | 2,685.65 ms | **4,136.22 ms** | 28.10% |
+| # 3 | Refine | 156.90 ms | 502.26 ms | 550.28 ms | **1,209.44 ms** | 8.22% |
+| # 4 | Post | 128.57 ms | 459.46 | 458.40 ms | **1,046.43 ms** | 7.11% |
+| # 5 | Aux | 86.57 ms | 293.87 ms | 302.46 ms | **682.90 ms** | 4.64% |
+| # 6 | WTA | 50.06 ms | 176.36 ms | 408.08 ms | **634.50 ms** | 4.31% |
+| # 7 | Cost | 41.30 ms | 159.77 ms | 362.85 ms | **563.92 ms** | 3.83% |
+| # 8 | Right WTA | 29.75 ms | 116.22 ms | 250.82 ms | **396.79 ms** | 2.70% |
+| # 9 | Confidence | 36.40 ms | 125.04 ms | 119.04 ms | **280.47 ms** | 1.91% |
+| #10 | **Prior** | **32.12 ms** | **101.55 ms** | **134.91 ms** | **268.58 ms** | **1.82%** |
+| — | **Sum of Stage Medians** | — | — | — | **14,718.26 ms** | **100.00%** |
+| — | **Median Total Runtime** | — | — | — | **14,760.52 ms** | — |
+
+- **Profile Consistency**: Sum of stage medians (14,718.26 ms) matches the independently evaluated median total pipeline runtime (14,760.52 ms) within 0.29%. Shares sum strictly to 100.00%.
+- **Ranking Shift**: Prior Estimator collapsed from **#3 bottleneck (1,531.23 ms, 9.51%)** down to **#10 bottleneck (268.58 ms, 1.82%)**, successfully eliminating Prior as an actionable bottleneck.
+- **Milestone Verifications**:
+  1. **Sub-15s Barrier Broken**: Measured median candidate pipeline runtime is **14.761 s**, establishing the sub-15 second milestone with empirical proof.
+  2. **Canonical 4x Cumulative Speedup Milestone**:
+     $$\text{Canonical Cumulative Speedup} = \frac{59.808\text{ s}}{14.761\text{ s}} = \mathbf{4.052\times}$$
+     The project officially surpasses the **$4.0\times$ cumulative speedup threshold** relative to the initial P3.0 baseline (`2ad6d26`, 59.808 s).

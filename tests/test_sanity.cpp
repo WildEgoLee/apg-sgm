@@ -718,6 +718,640 @@ int main() {
         std::cout << "  Refiner comprehensive matrix (sizes, iters, radii, masks, ranges, censuses): 100% bit-exact!\n";
     }
 
+    // -------------------------------------------------------------
+    // Test P3.14b-2 Deterministic Prior Parallelization Parity
+    // -------------------------------------------------------------
+    {
+        std::cout << "[Test PriorEstimator Deterministic Parallel Parity]" << std::endl;
+
+        auto serial_extract_supports = [](const PipelineConfig& cfg, const PipelineBuffers& buf) -> std::vector<SupportMatch> {
+            const int w = buf.left_gray.width();
+            const int h = buf.left_gray.height();
+            const int d0 = cfg.min_disparity;
+            const int d1 = cfg.max_disparity;
+            const bool sym = cfg.cost.census == CensusType::SymmetricCensus9x7;
+            const int step = 2;
+
+            constexpr int cell = 16;
+            const int gw = (w + cell - 1) / cell;
+            const int gh = (h + cell - 1) / cell;
+            const int n_cells = gw * gh;
+            const int hard_max = cfg.prior.max_supports;
+
+            std::vector<std::vector<SupportMatch>> cell_candidates(n_cells);
+            const int max_cand_per_cell = std::max(8, (hard_max * 2 + n_cells - 1) / std::max(1, n_cells));
+
+            for (int y = 2; y < h - 2; y += step) {
+                const int gy = clampi(y / cell, 0, gh - 1);
+                for (int x = 2; x < w - 2; x += step) {
+                    const int gx = clampi(x / cell, 0, gw - 1);
+                    const int ci = gy * gw + gx;
+                    if (static_cast<int>(cell_candidates[ci].size()) >= max_cand_per_cell) continue;
+
+                    const int tex = static_cast<int>(buf.left_gx.at(x, y)) + static_cast<int>(buf.left_gy.at(x, y));
+                    if (tex < cfg.prior.texture_threshold) continue;
+
+                    int best_d = d0;
+                    int best = 255, second = 255;
+                    for (int d = d0; d < d1; ++d) {
+                        const int xr = x - d;
+                        if (xr < 0 || xr >= w) continue;
+                        int c = 0;
+                        if (sym) {
+                            c = CostComputer::popcount32(buf.census_left[y * w + x] ^ buf.census_right[y * w + xr]);
+                        } else {
+                            c = CostComputer::popcount64(buf.census_left64[y * w + x] ^ buf.census_right64[y * w + xr]);
+                        }
+                        if (c < best) {
+                            second = best; best = c; best_d = d;
+                        } else if (c < second) {
+                            second = c;
+                        }
+                    }
+                    if (second <= 0) continue;
+                    const float uniq = static_cast<float>(second - best) / static_cast<float>(second);
+                    if (uniq < cfg.prior.uniqueness_ratio) continue;
+
+                    const int xr = x - best_d;
+                    if (xr < 1 || xr >= w - 1) continue;
+                    int rbest = 255, rbest_d = 0;
+                    for (int d = d0; d < d1; ++d) {
+                        const int xl = xr + d;
+                        if (xl < 0 || xl >= w) continue;
+                        int c = 0;
+                        if (sym) {
+                            c = CostComputer::popcount32(buf.census_left[y * w + xl] ^ buf.census_right[y * w + xr]);
+                        } else {
+                            c = CostComputer::popcount64(buf.census_left64[y * w + xl] ^ buf.census_right64[y * w + xr]);
+                        }
+                        if (c < rbest) {
+                            rbest = c; rbest_d = d;
+                        }
+                    }
+                    if (std::abs(rbest_d - best_d) > cfg.prior.lr_max_diff) continue;
+
+                    SupportMatch m;
+                    m.x = x; m.y = y; m.disparity = static_cast<float>(best_d); m.confidence = uniq;
+                    cell_candidates[ci].push_back(m);
+                }
+            }
+
+            std::vector<int> nonempty_cells;
+            nonempty_cells.reserve(n_cells);
+            for (int i = 0; i < n_cells; ++i) {
+                if (!cell_candidates[i].empty()) nonempty_cells.push_back(i);
+            }
+
+            std::vector<SupportMatch> out;
+            out.reserve(std::min(static_cast<size_t>(hard_max), static_cast<size_t>(n_cells * 4)));
+
+            if (static_cast<int>(nonempty_cells.size()) <= hard_max) {
+                std::vector<int> taken(n_cells, 0);
+                const int base_quota = std::max(1, hard_max / std::max(1, static_cast<int>(nonempty_cells.size())));
+                for (int ci : nonempty_cells) {
+                    const int take = std::min(base_quota, static_cast<int>(cell_candidates[ci].size()));
+                    for (int k = 0; k < take && static_cast<int>(out.size()) < hard_max; ++k) {
+                        out.push_back(cell_candidates[ci][k]);
+                        taken[ci]++;
+                    }
+                }
+                bool added = true;
+                while (added && static_cast<int>(out.size()) < hard_max) {
+                    added = false;
+                    for (int ci : nonempty_cells) {
+                        if (static_cast<int>(out.size()) >= hard_max) break;
+                        if (taken[ci] < static_cast<int>(cell_candidates[ci].size())) {
+                            out.push_back(cell_candidates[ci][taken[ci]]);
+                            taken[ci]++;
+                            added = true;
+                        }
+                    }
+                }
+            } else {
+                const size_t num_nonempty = nonempty_cells.size();
+                for (int k = 0; k < hard_max; ++k) {
+                    const size_t sample_idx = (static_cast<uint64_t>(k) * num_nonempty) / hard_max;
+                    const int ci = nonempty_cells[sample_idx];
+                    if (!cell_candidates[ci].empty()) {
+                        out.push_back(cell_candidates[ci].front());
+                    }
+                }
+            }
+            return out;
+        };
+
+        auto serial_interpolate_prior = [](const std::vector<SupportMatch>& supports, PipelineBuffers& buf) {
+            const int w = buf.left_gray.width();
+            const int h = buf.left_gray.height();
+            buf.d_prior = Image32f(w, h, -1.f);
+            buf.prior_confidence = Image32f(w, h, 0.f);
+            buf.prior_spread = Image32f(w, h, 999.f);
+            buf.d_prior_min = Image32f(w, h, -1.f);
+            buf.d_prior_max = Image32f(w, h, -1.f);
+            if (supports.empty()) return;
+
+            constexpr int cell = 16;
+            const int gw = (w + cell - 1) / cell;
+            const int gh = (h + cell - 1) / cell;
+            const int n_cells = gw * gh;
+
+            std::vector<std::vector<std::pair<float, float>>> cell_supports(n_cells);
+            for (const auto& s : supports) {
+                const int gx = clampi(s.x / cell, 0, gw - 1);
+                const int gy = clampi(s.y / cell, 0, gh - 1);
+                cell_supports[gy * gw + gx].push_back({s.disparity, s.confidence});
+            }
+
+            std::vector<float> grid_disp(n_cells, -1.f);
+            std::vector<float> grid_conf(n_cells, 0.f);
+            std::vector<float> grid_spread(n_cells, -1.f);
+            std::vector<float> grid_dmin(n_cells, -1.f);
+            std::vector<float> grid_dmax(n_cells, -1.f);
+
+            for (int i = 0; i < n_cells; ++i) {
+                auto& pts = cell_supports[i];
+                if (pts.empty()) continue;
+
+                std::sort(pts.begin(), pts.end(), [](const auto& a, const auto& b) {
+                    return a.first < b.first;
+                });
+
+                grid_dmin[i] = pts.front().first;
+                grid_dmax[i] = pts.back().first;
+                const float intra_span = grid_dmax[i] - grid_dmin[i];
+
+                float total_w = 0.f;
+                for (const auto& p : pts) total_w += p.second;
+                if (total_w <= 1e-6f) continue;
+
+                float half_w = total_w * 0.5f;
+                float cur_w = 0.f;
+                float d_med = pts.front().first;
+                for (const auto& p : pts) {
+                    cur_w += p.second;
+                    if (cur_w >= half_w) {
+                        d_med = p.first;
+                        break;
+                    }
+                }
+                grid_disp[i] = d_med;
+
+                std::vector<std::pair<float, float>> devs;
+                devs.reserve(pts.size());
+                for (const auto& p : pts) {
+                    devs.push_back({std::abs(p.first - d_med), p.second});
+                }
+                std::sort(devs.begin(), devs.end(), [](const auto& a, const auto& b) {
+                    return a.first < b.first;
+                });
+                cur_w = 0.f;
+                float dev_med = devs.front().first;
+                for (const auto& d : devs) {
+                    cur_w += d.second;
+                    if (cur_w >= half_w) {
+                        dev_med = d.first;
+                        break;
+                    }
+                }
+                grid_spread[i] = std::max(dev_med * 1.4826f, intra_span * 0.5f);
+
+                const float mean_conf = total_w / static_cast<float>(pts.size());
+                const float count_factor = clampf(static_cast<float>(pts.size()) / 3.f, 0.3f, 1.f);
+                grid_conf[i] = clampf(mean_conf * count_factor, 0.f, 1.f);
+            }
+
+            auto fill_grids = [&]() -> bool {
+                std::vector<float> nxt_d = grid_disp;
+                std::vector<float> nxt_c = grid_conf;
+                std::vector<float> nxt_s = grid_spread;
+                std::vector<float> nxt_min = grid_dmin;
+                std::vector<float> nxt_max = grid_dmax;
+                bool changed = false;
+                for (int gy = 0; gy < gh; ++gy) {
+                    for (int gx = 0; gx < gw; ++gx) {
+                        const int i = gy * gw + gx;
+                        if (grid_disp[i] >= 0.f) continue;
+                        float ad = 0.f, ac = 0.f, as = 0.f, ww = 0.f;
+                        float cur_min = 1e9f, cur_max = -1e9f;
+                        for (int oy = -1; oy <= 1; ++oy) {
+                            for (int ox = -1; ox <= 1; ++ox) {
+                                const int nx = gx + ox, ny = gy + oy;
+                                if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+                                const int ni = ny * gw + nx;
+                                const float v = grid_disp[ni];
+                                if (v < 0.f) continue;
+                                ad += v;
+                                ac += grid_conf[ni];
+                                as += (grid_spread[ni] >= 0.f ? grid_spread[ni] : 8.f);
+                                cur_min = std::min(cur_min, grid_dmin[ni] >= 0.f ? grid_dmin[ni] : v);
+                                cur_max = std::max(cur_max, grid_dmax[ni] >= 0.f ? grid_dmax[ni] : v);
+                                ww += 1.f;
+                            }
+                        }
+                        if (ww > 0.f) {
+                            nxt_d[i] = ad / ww;
+                            nxt_c[i] = (ac / ww) * 0.85f;
+                            nxt_s[i] = as / ww;
+                            nxt_min[i] = cur_min;
+                            nxt_max[i] = cur_max;
+                            changed = true;
+                        }
+                    }
+                }
+                grid_disp.swap(nxt_d);
+                grid_conf.swap(nxt_c);
+                grid_spread.swap(nxt_s);
+                grid_dmin.swap(nxt_min);
+                grid_dmax.swap(nxt_max);
+                return changed;
+            };
+            const int max_iters = std::max(gw, gh);
+            for (int iter = 0; iter < max_iters; ++iter) {
+                if (!fill_grids()) break;
+            }
+
+            for (int y = 0; y < h; ++y) {
+                const float fy = (static_cast<float>(y) + 0.5f) / cell - 0.5f;
+                const int gy = clampi(static_cast<int>(std::floor(fy)), 0, gh - 1);
+                const int gy1 = std::min(gy + 1, gh - 1);
+                const float ty = clampf(fy - static_cast<float>(gy), 0.f, 1.f);
+                for (int x = 0; x < w; ++x) {
+                    const float fx = (static_cast<float>(x) + 0.5f) / cell - 0.5f;
+                    const int gx = clampi(static_cast<int>(std::floor(fx)), 0, gw - 1);
+                    const int gx1 = std::min(gx + 1, gw - 1);
+                    const float tx = clampf(fx - static_cast<float>(gx), 0.f, 1.f);
+
+                    const int i00 = gy * gw + gx;
+                    const int i10 = gy * gw + gx1;
+                    const int i01 = gy1 * gw + gx;
+                    const int i11 = gy1 * gw + gx1;
+
+                    auto pick = [](float v) { return v < 0.f ? 0.f : v; };
+                    auto wgtv = [](float v) { return v < 0.f ? 0.f : 1.f; };
+
+                    const float w00 = (1.f - tx) * (1.f - ty) * wgtv(grid_disp[i00]);
+                    const float w10 = tx * (1.f - ty) * wgtv(grid_disp[i10]);
+                    const float w01 = (1.f - tx) * ty * wgtv(grid_disp[i01]);
+                    const float w11 = tx * ty * wgtv(grid_disp[i11]);
+                    const float ww = w00 + w10 + w01 + w11;
+
+                    if (ww > 1e-6f) {
+                        const float dp =
+                            (w00 * pick(grid_disp[i00]) + w10 * pick(grid_disp[i10]) +
+                             w01 * pick(grid_disp[i01]) + w11 * pick(grid_disp[i11])) / ww;
+                        buf.d_prior.at(x, y) = dp;
+                        buf.prior_confidence.at(x, y) =
+                            (w00 * grid_conf[i00] + w10 * grid_conf[i10] +
+                             w01 * grid_conf[i01] + w11 * grid_conf[i11]) / ww;
+
+                        float cmin = 1e9f, cmax = -1e9f;
+                        for (int idx : {i00, i10, i01, i11}) {
+                            if (grid_disp[idx] >= 0.f) {
+                                const float mn = grid_dmin[idx] >= 0.f ? grid_dmin[idx] : grid_disp[idx];
+                                const float mx = grid_dmax[idx] >= 0.f ? grid_dmax[idx] : grid_disp[idx];
+                                cmin = std::min(cmin, mn);
+                                cmax = std::max(cmax, mx);
+                            }
+                        }
+                        const float local_spread =
+                            (w00 * pick(grid_spread[i00]) + w10 * pick(grid_spread[i10]) +
+                             w01 * pick(grid_spread[i01]) + w11 * pick(grid_spread[i11])) / ww;
+                        buf.prior_spread.at(x, y) = local_spread;
+
+                        buf.d_prior_min.at(x, y) = (cmin <= cmax) ? std::min(cmin, dp) : dp;
+                        buf.d_prior_max.at(x, y) = (cmin <= cmax) ? std::max(cmax, dp) : dp;
+                    } else {
+                        buf.d_prior.at(x, y) = -1.f;
+                        buf.prior_confidence.at(x, y) = 0.f;
+                        buf.prior_spread.at(x, y) = 999.f;
+                        buf.d_prior_min.at(x, y) = -1.f;
+                        buf.d_prior_max.at(x, y) = -1.f;
+                    }
+                }
+            }
+        };
+
+        auto serial_apply_search_range = [](const PipelineConfig& cfg, PipelineBuffers& buf) {
+            const int w = buf.left_gray.width();
+            const int h = buf.left_gray.height();
+            if (!cfg.prior.enable || buf.d_prior.empty()) return;
+            const int default_R = cfg.prior.search_radius;
+            const int global_D = cfg.max_disparity - cfg.min_disparity;
+
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const float dp = buf.d_prior.at(x, y);
+                    if (dp < 0.f) continue;
+
+                    const float conf = !buf.prior_confidence.empty() ? buf.prior_confidence.at(x, y) : 0.f;
+                    const float spread = !buf.prior_spread.empty() ? buf.prior_spread.at(x, y) : 999.f;
+                    const float pmin = (!buf.d_prior_min.empty() && buf.d_prior_min.at(x, y) >= 0.f) ? buf.d_prior_min.at(x, y) : dp;
+                    const float pmax = (!buf.d_prior_max.empty() && buf.d_prior_max.at(x, y) >= 0.f) ? buf.d_prior_max.at(x, y) : dp;
+
+                    int R = default_R;
+                    if (conf < 0.25f) {
+                        R = global_D;
+                    } else if (conf > 0.85f && spread < 1.5f) {
+                        R = 8;
+                    } else if (conf > 0.60f && spread < 3.0f) {
+                        R = static_cast<int>(12.f + 1.5f * spread + 0.5f);
+                    } else if (conf > 0.40f && spread < 6.0f) {
+                        R = static_cast<int>(18.f + 2.0f * spread + 0.5f);
+                    } else {
+                        R = std::max(24, static_cast<int>(16.f + 2.0f * spread + 0.5f));
+                    }
+                    R = std::min(R, global_D);
+
+                    constexpr int kEnvelopeMargin = 4;
+                    const int bound_lo = static_cast<int>(std::floor(pmin)) - kEnvelopeMargin;
+                    const int bound_hi = static_cast<int>(std::ceil(pmax)) + kEnvelopeMargin + 1;
+
+                    const int lo = std::min(static_cast<int>(std::floor(dp)) - R, bound_lo);
+                    int hi = std::max(static_cast<int>(std::ceil(dp)) + R + 1, bound_hi);
+                    hi = std::min(hi, x + 1);
+                    buf.range.set_pixel(x, y, lo, hi);
+                }
+            }
+        };
+
+        auto serial_estimate = [&](const PipelineConfig& cfg, PipelineBuffers& buf) {
+            const int w = buf.left_gray.width();
+            const int h = buf.left_gray.height();
+            buf.range.allocate(w, h, cfg.min_disparity, cfg.max_disparity);
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    const int lo = cfg.min_disparity;
+                    const int hi = std::min(cfg.max_disparity, x + 1);
+                    buf.range.set_pixel(x, y, lo, hi);
+                }
+            }
+            buf.d_prior = Image32f(w, h, -1.f);
+            buf.supports.clear();
+            buf.support_count = 0;
+            if (!cfg.prior.enable) return;
+
+            buf.supports = serial_extract_supports(cfg, buf);
+            buf.support_count = buf.supports.size();
+            if (static_cast<int>(buf.supports.size()) < cfg.prior.min_supports) return;
+            serial_interpolate_prior(buf.supports, buf);
+            serial_apply_search_range(cfg, buf);
+        };
+
+        auto verify_prior_parity = [&](const PipelineConfig& cfg,
+                                       const PipelineBuffers& base_input,
+                                       const std::string& case_label) -> bool {
+            std::cout << "  Testing " << case_label << "..." << std::endl;
+            PriorEstimator prod_prior;
+            PipelineBuffers b_ser = base_input;
+            PipelineBuffers b_par = base_input;
+
+            serial_estimate(cfg, b_ser);
+            prod_prior.estimate(cfg, b_par);
+
+            if (b_ser.supports.size() != b_par.supports.size()) {
+                std::cerr << "Prior mismatch in " << case_label << ": support count "
+                          << b_ser.supports.size() << " vs " << b_par.supports.size() << "\n";
+                return false;
+            }
+            for (size_t i = 0; i < b_ser.supports.size(); ++i) {
+                const auto& s = b_ser.supports[i];
+                const auto& p = b_par.supports[i];
+                if (s.x != p.x || s.y != p.y || s.disparity != p.disparity || s.confidence != p.confidence) {
+                    std::cerr << "Prior support mismatch in " << case_label << " at index " << i
+                              << ": (" << s.x << "," << s.y << ",d=" << s.disparity << ",c=" << s.confidence
+                              << ") vs (" << p.x << "," << p.y << ",d=" << p.disparity << ",c=" << p.confidence << ")\n";
+                    return false;
+                }
+            }
+
+            const int w = b_ser.left_gray.width();
+            const int h = b_ser.left_gray.height();
+            if (b_ser.prior_confidence.empty() != b_par.prior_confidence.empty()) return false;
+            const bool has_interp = !b_ser.prior_confidence.empty();
+
+            for (int y = 0; y < h; ++y) {
+                for (int x = 0; x < w; ++x) {
+                    if (b_ser.d_prior.at(x, y) != b_par.d_prior.at(x, y) ||
+                        b_ser.range.dmin.at(x, y) != b_par.range.dmin.at(x, y) ||
+                        b_ser.range.dmax.at(x, y) != b_par.range.dmax.at(x, y)) {
+                        std::cerr << "Prior buffer mismatch in " << case_label << " at (" << x << "," << y << ")\n";
+                        return false;
+                    }
+                    if (has_interp) {
+                        if (b_ser.prior_confidence.at(x, y) != b_par.prior_confidence.at(x, y) ||
+                            b_ser.prior_spread.at(x, y) != b_par.prior_spread.at(x, y) ||
+                            b_ser.d_prior_min.at(x, y) != b_par.d_prior_min.at(x, y) ||
+                            b_ser.d_prior_max.at(x, y) != b_par.d_prior_max.at(x, y)) {
+                            std::cerr << "Prior interpolated buffer mismatch in " << case_label << " at (" << x << "," << y << ")\n";
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        };
+
+        // 1. Dimension Edge Cases: 1x1, 7x9, 15x17, 16x16, 17x17, 32x33, 65x47, 100x75
+        std::vector<std::pair<int, int>> dim_cases = {
+            {1, 1}, {7, 9}, {15, 17}, {16, 16}, {17, 17}, {32, 33}, {65, 47}, {100, 75}
+        };
+        for (const auto& d : dim_cases) {
+            const int tw = d.first, th = d.second;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.min_disparity = 0;
+            c.max_disparity = std::max(2, std::min(32, tw - 1));
+
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 1, r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+
+            if (!verify_prior_parity(c, b, "Dimension " + std::to_string(tw) + "x" + std::to_string(th))) {
+                return 1;
+            }
+        }
+        std::cout << "  Dimension edge cases (1x1 to 100x75, non-multiple of 16): 100% bit-exact!\n";
+
+        // 2. Budget Case A: nonempty_cells <= max_supports (base quota + round-robin)
+        {
+            const int tw = 96, th = 80;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.prior.max_supports = 200; // > n_cells (6 * 5 = 30)
+            c.min_disparity = 0;
+            c.max_disparity = 16;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 4, r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+            if (!verify_prior_parity(c, b, "Budget Case A")) return 1;
+        }
+        std::cout << "  Budget Case A (nonempty_cells <= max_supports): 100% bit-exact!\n";
+
+        // 3. Budget Case B: nonempty_cells > max_supports (deterministic uniform subsampling)
+        {
+            const int tw = 160, th = 128;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.prior.max_supports = 12; // < n_cells (10 * 8 = 80)
+            c.min_disparity = 0;
+            c.max_disparity = 16;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 4, r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+            if (!verify_prior_parity(c, b, "Budget Case B")) return 1;
+        }
+        std::cout << "  Budget Case B (nonempty_cells > max_supports): 100% bit-exact!\n";
+
+        // 4. Small support budget: max_supports = 1, 2, 3
+        for (int small_s : {1, 2, 3}) {
+            const int tw = 80, th = 64;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.prior.min_supports = 1;
+            c.prior.max_supports = small_s;
+            c.min_disparity = 0;
+            c.max_disparity = 16;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 2, r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+            if (!verify_prior_parity(c, b, "Small support budget max_supports=" + std::to_string(small_s))) return 1;
+        }
+        std::cout << "  Small support budget (max_supports = 1, 2, 3): 100% bit-exact!\n";
+
+        // 5. min_supports early return: support_count < min_supports
+        {
+            const int tw = 80, th = 64;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.prior.min_supports = 5000; // Will trigger early return
+            c.min_disparity = 0;
+            c.max_disparity = 16;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 4, r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+            if (!verify_prior_parity(c, b, "min_supports early return")) return 1;
+        }
+        std::cout << "  min_supports early return: 100% bit-exact!\n";
+
+        // 6. Texture Extremes: all low texture vs dense high texture
+        {
+            const int tw = 64, th = 48;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.prior.texture_threshold = 1000; // All pixels below texture threshold
+            c.min_disparity = 0;
+            c.max_disparity = 16;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 2, r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+            if (!verify_prior_parity(c, b, "All low texture")) return 1;
+        }
+        {
+            const int tw = 64, th = 48;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.prior.texture_threshold = 1; // Dense texture
+            c.min_disparity = 0;
+            c.max_disparity = 16;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 2, r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+            if (!verify_prior_parity(c, b, "Dense high texture")) return 1;
+        }
+        std::cout << "  Texture extremes (zero texture & dense texture): 100% bit-exact!\n";
+
+        // 7. Disparity Ranges: negative min, positive-only, small D, large D
+        std::vector<std::pair<int, int>> disp_ranges = {
+            {-8, 16}, {10, 40}, {0, 2}, {0, 64}
+        };
+        for (const auto& dr : disp_ranges) {
+            const int tw = 128, th = 64;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.min_disparity = dr.first;
+            c.max_disparity = dr.second;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, std::max(0, dr.first + 2), r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+            if (!verify_prior_parity(c, b, "Disparity range [" + std::to_string(dr.first) + "," + std::to_string(dr.second) + "]")) return 1;
+        }
+        std::cout << "  Disparity ranges (negative, positive-only, small D, large D): 100% bit-exact!\n";
+
+        // 8. Cap-hit condition in individual cells
+        {
+            const int tw = 64, th = 64;
+            PipelineConfig c;
+            c.prior.enable = true;
+            c.prior.max_supports = 32; // Force max_cand_per_cell = 8
+            c.prior.texture_threshold = 0;
+            c.prior.uniqueness_ratio = 0.0f;
+            c.prior.lr_max_diff = 100;
+            c.min_disparity = 0;
+            c.max_disparity = 8;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 2, r);
+            PipelineBuffers b;
+            CostComputer cc_local;
+            cc_local.compute_aux(l, r, c, b);
+            if (!verify_prior_parity(c, b, "Cap-hit condition")) return 1;
+        }
+        std::cout << "  Cap-hit cell condition: 100% bit-exact!\n";
+
+        // 9. Full Pipeline End-to-End Parity on Synthetic Pair
+        {
+            const int tw = 128, th = 96;
+            Image8 r;
+            Image8 l = make_shift_pair(tw, th, 6, r);
+            auto cfg_pipe = PipelineConfig::from_mode(QualityMode::HighQuality, 24);
+            cfg_pipe.prior.enable = true;
+
+            // Pipeline with production parallel prior
+            StereoMatcher matcher_par(cfg_pipe);
+            PipelineBuffers b_pipe_par;
+            if (!matcher_par.compute(l, r, b_pipe_par)) {
+                std::cerr << "Pipeline parallel run failed: " << matcher_par.last_error() << "\n";
+                return 1;
+            }
+
+            // Verify that pipeline range matches serial prior range bit-for-bit
+            PipelineBuffers b_pipe_ser;
+            CostComputer cc_p;
+            cc_p.compute_aux(l, r, cfg_pipe, b_pipe_ser);
+            serial_estimate(cfg_pipe, b_pipe_ser);
+
+            int range_diffs = 0;
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    if (b_pipe_ser.range.dmin.at(x, y) != b_pipe_par.range.dmin.at(x, y) ||
+                        b_pipe_ser.range.dmax.at(x, y) != b_pipe_par.range.dmax.at(x, y)) {
+                        range_diffs++;
+                    }
+                }
+            }
+            if (range_diffs != 0) {
+                std::cerr << "Pipeline search range mismatch count = " << range_diffs << "\n";
+                return 1;
+            }
+        }
+        std::cout << "  Full Pipeline SearchRange parity: 100% bit-exact (0 diffs)!\n";
+    }
+
     std::cout << "sanity ok\n";
     return 0;
 }
