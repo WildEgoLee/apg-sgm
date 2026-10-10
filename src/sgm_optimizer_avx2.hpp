@@ -19,5 +19,17 @@ void aggregate_path_packed_avx2(const PipelineConfig& cfg, const Image8& gray,
                                 PackedCostVolume32& acc, int dx, int dy,
                                 AccumulateMode mode = AccumulateMode::Add);
 
+void winner_take_all_packed_avx2(const PipelineConfig& cfg,
+                                 const PackedCostVolume16& vol,
+                                 Image32f& disp_out,
+                                 Image32f* best_cost,
+                                 Image32f* second_cost);
+
+void winner_take_all_packed_avx2(const PipelineConfig& cfg,
+                                 const PackedCostVolume32& vol,
+                                 Image32f& disp_out,
+                                 Image32f* best_cost,
+                                 Image32f* second_cost);
+
 } // namespace detail
 } // namespace apg

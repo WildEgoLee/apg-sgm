@@ -1554,3 +1554,40 @@ Rotational interleaving between C0 (baseline row-OpenMP scalar), C1 (unrolled sc
 - **Production Merge Gate Evaluation**:
   - Requirement: Aux saving $\ge 100\text{ ms}$, pipeline saving $\ge 80\text{ ms}$, all scenes non-regressing, 0 disparity mismatches.
   - Measured: Aux saving **+509.09 ms**, pipeline saving **+509.09 ms** (geomean **1.05x**), all scenes non-regressing ($\ge 1.03\times$), 0 disparity mismatches. **PASSED**.
+
+## P3.18b Production: 16-Lane AVX2 Vectorized Packed Winner-Take-All with Runtime Dispatch
+
+### 1. Architectural Summary & Scope
+- **Target Stage**: Final `WTA` optimization (`SgmOptimizer::winner_take_all_packed`).
+- **Optimization**:
+  - Vectorized best cost search: `_mm256_min_epu16` across 16 disparity states per vector step with invalid cost masking via `_mm256_blendv_epi8`.
+  - Tie-breaking: Horizontal reduction followed by earliest matching disparity index search ensuring exact scalar tie-breaking semantics.
+  - Vectorized second cost search: Evaluates costs with $|d - d_{\text{best}}| \le 1$ exclusion mask constructed via `_mm256_abs_epi16`, `_mm256_cmpgt_epi16`, and vector blend.
+  - Subpixel quadratic interpolation and invalid disparity handling bit-exact with scalar reference.
+  - Runtime CPU feature dispatch via `is_avx2_supported()` with exact scalar fallback.
+
+### 2. Isolated Feasibility Benchmark (16 Threads, 9 Repeats)
+| Scene | Scalar WTA (ms) | AVX2 WTA (ms) | WTA Speedup | Paired Save (ms) | Disparity Parity |
+|:---|---:|---:|:---:|---:|:---:|
+| **ArtL (F)** | 51.15 ms | 18.67 ms | **2.74x** | +32.05 ms | 100% bit-exact (0 diffs) |
+| **Piano (F)** | 188.13 ms | 69.10 ms | **2.72x** | +119.13 ms | 100% bit-exact (0 diffs) |
+| **Vintage (F)** | 436.43 ms | 159.97 ms | **2.73x** | +275.52 ms | 100% bit-exact (0 diffs) |
+| **Scene Geomean** | — | — | **2.73x** | — | **PASS** |
+| **Pooled Sum** | 675.70 ms | 247.74 ms | **2.73x** | **+426.71 ms** | **ALL PASS** |
+
+- **WTA Feasibility Gate Evaluation**:
+  - Requirement: WTA geomean $\ge 1.50\times$, every scene $\ge 1.30\times$, pooled saving $\ge 200\text{ ms}$. Strong GO: geomean $\ge 2.0\times$, saving $\ge 300\text{ ms}$.
+  - Measured: Geomean **2.73x**, every scene $\ge 2.72\times$, pooled saving **+426.71 ms**. **STRONG GO**.
+
+### 3. Production Paired Full Pipeline Benchmark (16 Threads, Full-Res F, 9 Repeats)
+| Scene | Base WTA (ms) | Cand WTA (ms) | WTA Spd | WTA Save (ms) | Base Pipe (ms) | Cand Pipe (ms) | Pipe Spd | Pipe Save (ms) | Disparity Parity |
+|:---|---:|---:|:---:|---:|---:|---:|:---:|---:|:---:|
+| **ArtL (F)** | 47.13 ms | 19.81 ms | **2.38x** | +27.63 ms | 1,073.94 ms | 1,046.28 ms | **1.03x** | +27.63 ms | 100% bit-exact (0 diffs) |
+| **Piano (F)** | 178.37 ms | 73.31 ms | **2.43x** | +106.18 ms | 4,190.19 ms | 4,081.86 ms | **1.03x** | +106.18 ms | 100% bit-exact (0 diffs) |
+| **Vintage (F)** | 429.52 ms | 165.99 ms | **2.59x** | +263.29 ms | 9,145.44 ms | 8,875.42 ms | **1.03x** | +263.29 ms | 100% bit-exact (0 diffs) |
+| **Scene Geomean** | — | — | **2.46x** | — | — | — | **1.03x** | — | **PASS** |
+| **Pooled Sum** | 655.03 ms | 259.11 ms | **2.53x** | **+397.10 ms** | 14,409.57 ms | 14,003.55 ms | **1.03x** | **+397.10 ms** | **ALL PASS** |
+
+- **Production Merge Gate Evaluation**:
+  - Requirement: WTA saving $\ge 180\text{ ms}$, pipeline saving $\ge 130\text{ ms}$, 0 disparity mismatches.
+  - Measured: WTA saving **+397.10 ms**, pipeline saving **+397.10 ms** (geomean **1.03x**), 0 disparity mismatches. **PASSED**.
