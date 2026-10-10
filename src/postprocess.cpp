@@ -12,6 +12,9 @@ void PostProcessor::left_right_check(const PipelineConfig& cfg, PipelineBuffers&
     const int h = buf.disparity.height();
     const float tol = static_cast<float>(cfg.post.lr_max_diff) + 0.5f;
 
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(static)
+#endif
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const float d = buf.disparity.at(x, y);
@@ -41,6 +44,9 @@ void PostProcessor::fill_holes(const PipelineConfig& cfg, PipelineBuffers& buf) 
     const int max_gap = cfg.post.max_fill_gap;
 
     Image32f out = buf.disparity;
+#if defined(_OPENMP)
+    #pragma omp parallel for schedule(dynamic, 1)
+#endif
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             if (buf.disparity.at(x, y) >= 0.f) continue;
@@ -101,8 +107,35 @@ void PostProcessor::median(const PipelineConfig& cfg, PipelineBuffers& buf) cons
     const int w = buf.disparity.width();
     const int h = buf.disparity.height();
     Image32f out = buf.disparity;
+    const size_t max_win = static_cast<size_t>((2 * r + 1) * (2 * r + 1));
+
+#if defined(_OPENMP)
+    #pragma omp parallel
+    {
+        std::vector<float> win;
+        win.reserve(max_win);
+        #pragma omp for schedule(dynamic, 1)
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                win.clear();
+                for (int oy = -r; oy <= r; ++oy) {
+                    for (int ox = -r; ox <= r; ++ox) {
+                        const int xx = x + ox, yy = y + oy;
+                        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+                        const float d = buf.disparity.at(xx, yy);
+                        if (d >= 0.f) win.push_back(d);
+                    }
+                }
+                if (win.empty()) continue;
+                const size_t mid = win.size() / 2;
+                std::nth_element(win.begin(), win.begin() + static_cast<std::ptrdiff_t>(mid), win.end());
+                out.at(x, y) = win[mid];
+            }
+        }
+    }
+#else
     std::vector<float> win;
-    win.reserve(static_cast<size_t>((2 * r + 1) * (2 * r + 1)));
+    win.reserve(max_win);
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             win.clear();
@@ -120,6 +153,7 @@ void PostProcessor::median(const PipelineConfig& cfg, PipelineBuffers& buf) cons
             out.at(x, y) = win[mid];
         }
     }
+#endif
     buf.disparity = std::move(out);
 }
 
