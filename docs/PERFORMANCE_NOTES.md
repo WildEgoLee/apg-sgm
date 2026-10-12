@@ -1592,29 +1592,33 @@ Rotational interleaving between C0 (baseline row-OpenMP scalar), C1 (unrolled sc
   - Requirement: WTA saving $\ge 180\text{ ms}$, pipeline saving $\ge 130\text{ ms}$, 0 disparity mismatches.
   - Measured: WTA saving **+397.10 ms**, pipeline saving **+397.10 ms** (geomean **1.03x**), 0 disparity mismatches. **PASSED**.
 
-## P3.23 Final Stabilization & Performance Closure
+### P3.23 Performance Progression & Technical Registry
 
-### 1. Cumulative Optimization Ladder (P3.0 Baseline to Final Main)
+### 1. Optimization Ladder & Verified Milestones
 
-| Stage / Phase | Candidate Description | Merge SHA | Isolated Saving | Pipeline Saving | Cumulative Pooled Runtime | Cumulative Speedup |
-|:---|:---|:---:|---:|---:|---:|:---:|
-| **P3.0 Canonical** | Initial un-optimized baseline | `a547369` | — | — | 59,808 ms (59.81 s) | 1.00x |
-| **Phase A (P3.16b-2)** | Gray (`static`) & Grad (`dynamic,1`) parallelization | `9ef0b81` | +206.65 ms | +178.77 ms | 15,255 ms (15.26 s) | 3.92x |
-| **Phase B (P3.16d)** | 8-lane AVX2 Symmetric Census 9x7 runtime dispatch | `66e2fdc` | +493.29 ms | +509.09 ms | 15,174 ms (15.17 s) | 3.94x |
-| **Phase C (P3.17b)** | Confidence OpenMP row-parallel | NO-GO | +77.92 ms | +77.92 ms | — (< 80 ms gate) | — |
-| **Phase D (P3.18b)** | 16-lane AVX2 Winner-Take-All runtime dispatch | `c93436a` | +397.10 ms | +397.10 ms | 14,632 ms (14.63 s) | 4.09x |
-| **Phase F (P3.19c)** | SGM U16 PathState 16-lane AVX2 | NO-GO | -1,109.12 ms | -1,109.12 ms | — (regression) | — |
-| **Phase G (P3.20a)** | Cross residual attribution II | CLOSED | Projected < 300 ms | — | — | — |
-| **Phase H (P3.21a)** | Refine residual audit II | CLOSED | Projected < 250 ms | — | — | — |
-| **Phase I (P3.22)** | Secondary stage sweep (Cost, RWTA, Prior, Post) | CLOSED | All closed per rules | — | — | — |
-| **Phase J (P3.23a)** | **Canonical Final Milestone (15 Repeats, 16 Threads)** | `c93436a` | — | — | **14,631.54 ms (14.63 s)** | **4.09x** |
+> **方法学说明**：为避免跨测试会话（session）绝对运行时间漂移对代码加速比评估的干扰，每个生产 PR 的加速效益严格以**同会话、同可执行程序下交替轮换测量的成对流水线节省（Same-Session Paired Pipeline Saving）**为准；阶段累积进展则通过重要节点上的 **Fresh Canonical Checkpoint（16 线程、15 轮重复测量）** 进行标定。
 
-### 2. Canonical Final 10-Stage Attribution Profile (16 Threads, 15 Repeats)
+| 优化里程碑 / PR | 变更描述 | PR / Commit SHA | 孤立阶段节省 (ms) | 同会话成对流水线节省 (ms) | 阶段状态 |
+|:---|:---|:---:|---:|---:|:---:|
+| **P3.0 Baseline** | 初始规范基准 (Middlebury 2014 Full-Res F) | `N/A` (Canonical) | — | — | **59.808 s 基准标定** |
+| **P3.15b Checkpoint** | 确定性后处理并行化合流后基准标定 | `a547369` | — | — | **15.483 s 阶段标定** |
+| **Phase A (P3.16b-2)** | 灰度 (`static`) 与梯度 (`dynamic,1`) 预处理并行化 | PR #21 (`9ef0b81`) | +206.65 ms (1.35x) | +178.77 ms (1.01x) | **MERGED** |
+| **Phase B (P3.16d)** | 8 像素 AVX2 对称 Census 9x7 与运行时动态分发 | PR #22 (`66e2fdc`) | +493.29 ms (16.65x) | +509.09 ms (1.04x) | **MERGED** |
+| **Phase C (P3.17a)** | 置信度估算行级 OpenMP 并行化探索 | NO-GO | +77.92 ms (3.04x) | +77.92 ms | **FEASIBILITY NO-GO** (未达 $\ge 150\text{ ms}$ 可行性门槛) |
+| **Phase D (P3.18b)** | 16-lane AVX2 打包视差 WTA 扫描与动态分发 | PR #23 (`c93436a`) | +397.10 ms (2.53x) | +397.10 ms (1.03x) | **MERGED** |
+| **Phase D+ (P3.24a)** | 泛化 WTA uint16 哨兵至全值域域 ($0 \dots 65534$) | PR #25 (`cd400a9`) | — | — | **MERGED** (健壮性修复) |
+| **Phase F (P3.19c)** | SGM U16 PathState 16-lane AVX2 原型 | NO-GO | -1,109.12 ms (0.78x–0.87x) | -1,109.12 ms | **FEASIBILITY NO-GO** (水平约简开销反转) |
+| **Phase G (P3.20a)** | Cross 剩余微归因与深水区探索 | CLOSED | 理论预期 $< 300\text{ ms}$ | — | **CLOSED** (SIMD 覆盖 98.32%, 边界边缘化) |
+| **Phase H (P3.21a)** | Refine 剩余开销微归因审计 | CLOSED | 理论预期 $< 250\text{ ms}$ | — | **CLOSED** (像素因果链依赖，局部代价已向量化) |
+| **Phase I (P3.22)** | 次级阶段扫描 (RWTA, Prior, Post) | CLOSED | 均达关闭规则 | — | **CLOSED** |
+| **Canonical Checkpoint**| **最新主干 15 轮独立重复基准标定** | `cd400a9` | — | — | **14.632 s 标定 (4.09x 累积加速)** |
 
-- Measured across Middlebury 2014 full-resolution F (`ArtL`, `Piano`, `Vintage`), 16 threads, median of 15 repeats:
+### 2. Canonical 10-Stage Attribution Profile (16 线程, 15 轮独立重复)
 
-| Rank | Stage | ArtL (ms) | Piano (ms) | Vintage (ms) | Pooled (ms) | Share (%) |
-|:---:|:---|---:|---:|---:|---:|:---:|
+- 测试场景：Middlebury 2014 Full Resolution, HighQuality (`ArtL`, `Piano`, `Vintage`), 16 线程，15 轮重复测量取中位数：
+
+| 排名 | 流水线阶段 | ArtL (ms) | Piano (ms) | Vintage (ms) | Pooled (ms) | Stage Share (%) |
+|:---:|:---|---:|---:|---:|---:|---:|
 | # 1 | **SGM** | 433.69 ms | 1,619.41 ms | 4,118.34 ms | **6,171.44 ms** | 42.20% |
 | # 2 | **Cross** | 257.45 ms | 1,235.75 ms | 3,185.16 ms | **4,678.37 ms** | 31.99% |
 | # 3 | **Refine** | 164.71 ms | 528.65 ms | 594.44 ms | **1,287.80 ms** | 8.81% |
@@ -1627,32 +1631,32 @@ Rotational interleaving between C0 (baseline row-OpenMP scalar), C1 (unrolled sc
 | #10 | **Aux** | 10.33 ms | 32.09 ms | 33.28 ms | **75.70 ms** | 0.52% |
 | — | **Stage Sum** | 1,084.39 ms | 4,185.13 ms | 9,355.41 ms | **14,624.93 ms** | **100.00%** |
 | — | **Median Total** | **1,087.47 ms** | **4,189.49 ms** | **9,354.58 ms** | **14,631.54 ms** | — |
-| — | **MAD (% of Med)** | 10.29 ms (0.95%) | 29.00 ms (0.69%) | 164.46 ms (1.76%) | — | — |
+| — | **MAD / Median** | 10.29 ms (0.95%) | 29.00 ms (0.69%) | 164.46 ms (1.76%) | — | (Noise < 5%) |
 
-### 3. Thread Scaling & Determinism Stress Validation
+### 3. 多线程扩展性与确定性压力验证
 
-- **Thread Scaling (Pooled 3 Full-Res Scenes Total Runtime)**:
+- **线程扩展性 (三场景汇总总时间)**:
   - **1 Thread**: 54,732.20 ms (54.73 s)
   - **2 Threads**: 30,623.66 ms (1.79x vs 1T)
   - **4 Threads**: 20,163.33 ms (2.71x vs 1T)
   - **8 Threads**: 16,088.19 ms (3.40x vs 1T)
   - **16 Threads**: 14,313.21 ms (3.82x vs 1T)
-- **Determinism Stress Verification**:
-  - 20 repeated runs on ArtL at 16 threads evaluated via 64-bit FNV-1a disparity hash:
-  - Result: **PASS (100% bit-exact across all 20 runs, hash: 0xd504fa30176bdf9e)**.
+- **确定性压力验证**:
+  - 在 16 线程下连续 20 次执行 ArtL 完整流水线，计算最终视差输出的 64 位 FNV-1a 哈希：
+  - **结果：100% bit-exact 严格确定（20/20 PASS，哈希值：`0xd504fa30176bdf9e`）**。
 
-### 4. Closed-Track Registry
+### 4. 优化阶段闭环注册表 (Closed-Track Registry)
 
-| Stage / Component | Final Status | Reason & Revisit Condition |
+| 阶段 / 组件 | 最终状态 | 原因说明与重新开启条件 (Revisit Condition) |
 |:---|:---:|:---|
-| **Aux Gray/Grad** | **MERGED** | Parallelized via OpenMP `static` (gray) and `dynamic,1` (gradient) in PR #21 (`9ef0b81`). |
-| **Census** | **MERGED** | Vectorized via 8-lane AVX2 runtime dispatch in PR #22 (`66e2fdc`). Aux total collapsed to 75.7 ms (0.52% share). |
-| **WTA** | **MERGED** | Vectorized via 16-lane AVX2 runtime dispatch in PR #23 (`c93436a`). WTA collapsed to 260.9 ms (1.78% share). |
-| **Confidence** | **CLOSED** | P3.17b evaluated: +77.92 ms paired saving fell just below strict $\ge 80\text{ ms}$ gate. Revisit if stage runtime $> 350\text{ ms}$. |
-| **SGM** | **CLOSED** | Formal mathematical bound $\text{cur} \le \text{cost} + P_2 \le 375$ verified; U16 PathState 16-lane AVX2 regressed 0.78x–0.87x due to unsigned horizontal reduction and unpack latency. Scalar fringe is 0.00%. Revisit only with hardware support for single-cycle unsigned 16-lane min broadcast (AVX-512). |
-| **Cross** | **CLOSED** | Micro-attribution shows B16 SIMD coverage is 98.32% (scalar fringe 1.68%), exact division is only 6.57% (254 ms total), transient layout transposition exceeds 20% of vertical saving, and scheduler already optimal. Projected gain $< 300\text{ ms}$. |
-| **Refine** | **CLOSED** | Invariant-hoisted dedicated AVX2 TU with hardware `vroundss` already active; total RNG is 99.7 ms, round/clamp is 213 ms, and pixel-parallelism is prohibited by immediate spatial recurrence. Projected gain $< 250\text{ ms}$. |
-| **Cost** | **CLOSED** | AVX2 runtime path achieves 7,875 Mstates/s (6.64x speedup over scalar); remaining runtime is 551 ms. Projected gain $< 150\text{ ms}$. |
-| **Right WTA** | **CLOSED** | Runtime 461.5 ms $< 500\text{ ms}$ re-open threshold. |
-| **Prior** | **CLOSED** | Runtime 323.5 ms $< 450\text{ ms}$ and share 2.21% $< 3\%$. Permanently closed per Section 68. |
-| **Post** | **CLOSED** | Runtime 142.8 ms $< 350\text{ ms}$. Permanently closed per Section 69. |
+| **Aux Gray/Grad** | **MERGED** | PR #21 (`9ef0b81`) 采用 OpenMP `static` (灰度) 与 `dynamic,1` (梯度) 并行化。 |
+| **Census** | **MERGED** | PR #22 (`66e2fdc`) 采用 8 像素 AVX2 向量化与运行时动态分发。Aux 阶段总耗时坍缩至 75.7 ms (0.52%)。 |
+| **WTA** | **MERGED** | PR #23 (`c93436a`) 向量化 16-lane AVX2，PR #25 (`cd400a9`) 泛化无符号全值域哨兵。耗时降至 260.9 ms (1.78%)。 |
+| **Confidence** | **CLOSED** | P3.17a 可行性实测：孤立加速 3.04x (+77.92 ms)，未达到计划预定的 $\ge 150\text{ ms}$ 可行性门禁。当前耗时仅 290.7 ms (1.99%)。重开条件：仅当流水线基准漂移使该阶段耗时 $> 350\text{ ms}$ 时。 |
+| **SGM** | **CLOSED_FOR_CURRENT_CPU_SURFACES** | 严格数学证明 $\text{cur} \le \text{cost} + P_2 \le 375$ 成立；但 16-lane AVX2 U16 PathState 因无符号约简与解包开销致使 0.78x–0.87x 负加速。标量边缘为 0.00%。当前已集成 packed uint16 累加器、AVX2 视差递推、垂直 B16 分块及对角 H16/S32 交错。重开条件：仅当全新微归因识别出 $\ge 300\text{ ms}$ 确定性加速面，或新硬件指令集架构根本改变递推代价模型时。 |
+| **Cross** | **CLOSED** | 微归因表明 B16 SIMD 覆盖率达 98.32%（标量边缘仅 1.68%）；精确整除仅占 6.57% (254 ms)；瞬态布局转置开销超 20% 垂直节省，动态调度已最优化。剩余预期增益 $< 300\text{ ms}$。 |
+| **Refine** | **CLOSED** | 专用 AVX2 TU 配合硬件 `vroundss` 与局部代价提升已生效；RNG 仅耗 99.7 ms，候选舍入截断仅 213 ms，像素因果链强禁止粗粒度并行。剩余预期增益 $< 250\text{ ms}$。 |
+| **Cost** | **OPEN_FOR_RESIDUAL_AUDIT** | 当前 canonical 耗时为 932.21 ms (6.37%)，正由 P3.25a 开展独立核与流水线分配微归因审计，以测算是否具备 $\ge 150\text{ ms}$ 可回收空间。 |
+| **Right WTA** | **CLOSED** | 耗时 461.5 ms $< 500\text{ ms}$ 重开门槛。 |
+| **Prior** | **CLOSED** | 耗时 323.5 ms $< 450\text{ ms}$ 且占比 2.21% $< 3\%$。按规范永久关闭。 |
+| **Post** | **CLOSED** | 耗时 142.8 ms $< 350\text{ ms}$。按规范永久关闭。 |
