@@ -1900,7 +1900,43 @@ int main() {
                     }
                 }
             }
-            std::cout << "  SgmOptimizer::winner_take_all_packed high-cost (>32767) domain tests: 100% bit-exact PASS!\n";
+
+            // Test case B: true minimum tie-breaking at > 32767
+            // Ties at di=10 and di=20 with identical minimum cost 40000; all other values > 40000
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    uint16_t* s = vol.slice(x, y);
+                    for (int di = 0; di < 64; ++di) {
+                        s[di] = static_cast<uint16_t>(45000 + di * 10);
+                    }
+                    s[10] = 40000;
+                    s[20] = 40000;
+                }
+            }
+
+            wta_scalar_reference(cfg, vol, d_ref, &b_ref, &s_ref);
+            opt.winner_take_all_packed(cfg, vol, d_test, &b_test, &s_test);
+
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    if (d_ref.at(x, y) != d_test.at(x, y) ||
+                        b_ref.at(x, y) != b_test.at(x, y) ||
+                        s_ref.at(x, y) != s_test.at(x, y)) {
+                        std::cerr << "winner_take_all_packed high-cost tie-break mismatch at (" << x << "," << y << ")!\n";
+                        std::cerr << "  ref: d=" << d_ref.at(x,y) << " best=" << b_ref.at(x,y) << " sec=" << s_ref.at(x,y) << "\n";
+                        std::cerr << "  test: d=" << d_test.at(x,y) << " best=" << b_test.at(x,y) << " sec=" << s_test.at(x,y) << "\n";
+                        return 1;
+                    }
+                    // Without subpixel delta, best_d should be 10 (the earliest disparity among tied min costs 10 and 20)
+                    const int chosen_best_d = static_cast<int>(std::round(d_test.at(x, y)));
+                    if (chosen_best_d != 10) {
+                        std::cerr << "winner_take_all_packed did not choose earliest disparity for tie: got integer best_d="
+                                  << chosen_best_d << " expected 10 (float dval=" << d_test.at(x, y) << ")\n";
+                        return 1;
+                    }
+                }
+            }
+            std::cout << "  SgmOptimizer::winner_take_all_packed high-cost (>32767) domain & tie-break tests: 100% bit-exact PASS!\n";
         }
     }
 
