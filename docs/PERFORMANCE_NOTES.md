@@ -1656,7 +1656,7 @@ Rotational interleaving between C0 (baseline row-OpenMP scalar), C1 (unrolled sc
 | **SGM** | **CLOSED_FOR_CURRENT_CPU_SURFACES** | 严格数学证明 $\text{cur} \le \text{cost} + P_2 \le 375$ 成立；但 16-lane AVX2 U16 PathState 因无符号约简与解包开销致使 0.78x–0.87x 负加速。标量边缘为 0.00%。当前已集成 packed uint16 累加器、AVX2 视差递推、垂直 B16 分块及对角 H16/S32 交错。重开条件：仅当全新微归因识别出 $\ge 300\text{ ms}$ 确定性加速面，或新硬件指令集架构根本改变递推代价模型时。 |
 | **Cross** | **CLOSED** | 微归因表明 B16 SIMD 覆盖率达 98.32%（标量边缘仅 1.68%）；精确整除仅占 6.57% (254 ms)；瞬态布局转置开销超 20% 垂直节省，动态调度已最优化。剩余预期增益 $< 300\text{ ms}$。 |
 | **Refine** | **CLOSED** | 专用 AVX2 TU 配合硬件 `vroundss` 与局部代价提升已生效；RNG 仅耗 99.7 ms，候选舍入截断仅 213 ms，像素因果链强禁止粗粒度并行。剩余预期增益 $< 250\text{ ms}$。 |
-| **Cost** | **OPEN_FOR_RESIDUAL_AUDIT** | 当前 canonical 耗时为 932.21 ms (6.37%)，正由 P3.25a 开展独立核与流水线分配微归因审计，以测算是否具备 $\ge 150\text{ ms}$ 可回收空间。 |
+| **Cost** | **CLOSED** | P3.25a 阶段微归因实测明确了 932 ms 流水线耗时与 551 ms 纯计算核的构成：三场景中 AVX2 计算核占 683.85 ms (58.6%)，大页/内存分配占 446.76 ms (38.3%)，Layout 生成仅占 37.81 ms (3.2%)。在多分辨率/变视差场景下各帧 disparity range 动态变化，PackedCostVolume 为可变尺寸堆缓冲，跨帧预分配空间消除内存分配在工程复杂度与内存 footprint 权衡下未达 $\ge 150\text{ ms}$ 收益门禁。Cost 阶段正式永久关闭。 |
 | **Right WTA** | **CLOSED** | 耗时 461.5 ms $< 500\text{ ms}$ 重开门槛。 |
 | **Prior** | **CLOSED** | 耗时 323.5 ms $< 450\text{ ms}$ 且占比 2.21% $< 3\%$。按规范永久关闭。 |
 | **Post** | **CLOSED** | 耗时 142.8 ms $< 350\text{ ms}$。按规范永久关闭。 |
