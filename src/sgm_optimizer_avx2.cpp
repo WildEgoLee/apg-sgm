@@ -477,22 +477,22 @@ void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
             if constexpr (std::is_same_v<TCost, uint16_t>) {
                 const int vec_len = (D_p / 16) * 16;
                 if (vec_len >= 16) {
-                    __m256i v_min = _mm256_set1_epi16(static_cast<short>(0x7FFF));
+                    __m256i v_min = _mm256_set1_epi16(static_cast<short>(inv_c));
                     for (int di = 0; di < vec_len; di += 16) {
                         __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(s + di));
                         __m256i is_inv = _mm256_cmpeq_epi16(v, _mm256_set1_epi16(static_cast<short>(inv_c)));
-                        v = _mm256_blendv_epi8(v, _mm256_set1_epi16(static_cast<short>(0x7FFF)), is_inv);
+                        v = _mm256_blendv_epi8(v, _mm256_set1_epi16(static_cast<short>(inv_c)), is_inv);
                         v_min = _mm256_min_epu16(v_min, v);
                     }
 
                     alignas(32) uint16_t red[16];
                     _mm256_store_si256(reinterpret_cast<__m256i*>(red), v_min);
-                    uint16_t min_vec = 0x7FFF;
+                    uint16_t min_vec = inv_c;
                     for (int i = 0; i < 16; ++i) {
                         if (red[i] < min_vec) min_vec = red[i];
                     }
 
-                    if (min_vec < 0x7FFF) {
+                    if (min_vec != inv_c) {
                         for (int di = 0; di < vec_len; ++di) {
                             if (s[di] == min_vec) {
                                 best = min_vec;
@@ -529,7 +529,7 @@ void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
                 const int vec_len = (D_p / 16) * 16;
                 if (vec_len >= 16) {
                     const int best_di = best_d - lo;
-                    __m256i v_sec = _mm256_set1_epi16(static_cast<short>(0x7FFF));
+                    __m256i v_sec = _mm256_set1_epi16(static_cast<short>(inv_c));
 
                     alignas(32) static const int16_t lane_idx[16] = {0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15};
                     const __m256i v_lanes = _mm256_load_si256(reinterpret_cast<const __m256i*>(lane_idx));
@@ -544,17 +544,17 @@ void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
                         __m256i is_inv = _mm256_cmpeq_epi16(v, _mm256_set1_epi16(static_cast<short>(inv_c)));
                         __m256i mask_out = _mm256_or_si256(excl_mask, is_inv);
 
-                        v = _mm256_blendv_epi8(v, _mm256_set1_epi16(static_cast<short>(0x7FFF)), mask_out);
+                        v = _mm256_blendv_epi8(v, _mm256_set1_epi16(static_cast<short>(inv_c)), mask_out);
                         v_sec = _mm256_min_epu16(v_sec, v);
                     }
 
                     alignas(32) uint16_t red_sec[16];
                     _mm256_store_si256(reinterpret_cast<__m256i*>(red_sec), v_sec);
-                    uint16_t min_sec = 0x7FFF;
+                    uint16_t min_sec = inv_c;
                     for (int i = 0; i < 16; ++i) {
                         if (red_sec[i] < min_sec) min_sec = red_sec[i];
                     }
-                    if (min_sec < 0x7FFF) second = min_sec;
+                    if (min_sec != inv_c) second = min_sec;
                 }
 
                 for (int di = vec_len; di < D_p; ++di) {

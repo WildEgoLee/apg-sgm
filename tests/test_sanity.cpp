@@ -1854,6 +1854,54 @@ int main() {
             }
         }
         std::cout << "  SgmOptimizer::winner_take_all_packed synthetic matrix: 100% bit-exact!\n";
+
+        // Synthetic High-Cost Domain Tests (> 32767, ties at >32767, invalid mixtures)
+        {
+            const int tw = 16, th = 8;
+            SearchRange rng;
+            rng.dmin = Image16s(tw, th, 0);
+            rng.dmax = Image16s(tw, th, 64);
+            auto layout = PackedVolumeLayout::from_range(rng);
+            PackedCostVolume16 vol;
+            vol.allocate_for_overwrite(layout);
+
+            // Test case A: all valid costs > 32767 (e.g. 35000 .. 60000)
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    uint16_t* s = vol.slice(x, y);
+                    for (int di = 0; di < 64; ++di) {
+                        s[di] = static_cast<uint16_t>(35000 + (di * 17 + x * 31 + y * 47) % 25000);
+                    }
+                    // Place known minimum >= 32768
+                    s[20] = 32768;
+                    s[22] = 33000;
+                    // Introduce equal-cost tie at > 32767 (e.g. at di=35 and di=45)
+                    s[35] = 34000;
+                    s[45] = 34000;
+                    // Mixture with invalid costs
+                    s[0] = kInvalidCost;
+                    s[63] = kInvalidCost;
+                }
+            }
+
+            Image32f d_ref, d_test, b_ref, b_test, s_ref, s_test;
+            wta_scalar_reference(cfg, vol, d_ref, &b_ref, &s_ref);
+            opt.winner_take_all_packed(cfg, vol, d_test, &b_test, &s_test);
+
+            for (int y = 0; y < th; ++y) {
+                for (int x = 0; x < tw; ++x) {
+                    if (d_ref.at(x, y) != d_test.at(x, y) ||
+                        b_ref.at(x, y) != b_test.at(x, y) ||
+                        s_ref.at(x, y) != s_test.at(x, y)) {
+                        std::cerr << "winner_take_all_packed high-cost domain mismatch at (" << x << "," << y << ")!\n";
+                        std::cerr << "  ref: d=" << d_ref.at(x,y) << " best=" << b_ref.at(x,y) << " sec=" << s_ref.at(x,y) << "\n";
+                        std::cerr << "  test: d=" << d_test.at(x,y) << " best=" << b_test.at(x,y) << " sec=" << s_test.at(x,y) << "\n";
+                        return 1;
+                    }
+                }
+            }
+            std::cout << "  SgmOptimizer::winner_take_all_packed high-cost (>32767) domain tests: 100% bit-exact PASS!\n";
+        }
     }
 
     std::cout << "sanity ok\n";
