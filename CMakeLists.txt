@@ -61,6 +61,10 @@ else()
 endif()
 
 if(APG_SGM_BUILD_PYTHON)
+    if(NOT BUILD_SHARED_LIBS)
+        set_target_properties(apg_sgm PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    endif()
+
     find_package(pybind11 CONFIG QUIET)
     if(NOT pybind11_FOUND)
         find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
