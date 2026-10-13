@@ -14,6 +14,7 @@
 #include "apg_sgm/image_view.hpp"
 #include "apg_sgm/session.hpp"
 #include "apg_sgm/ablation.hpp"
+#include "apg_sgm/c_api.h"
 
 #include <iostream>
 

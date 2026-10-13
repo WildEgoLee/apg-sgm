@@ -26,6 +26,7 @@ add_library(apg_sgm
     src/pipeline.cpp
     src/ablation.cpp
     src/metrics.cpp
+    src/c_api.cpp
 )
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -40,6 +41,8 @@ if(OpenMP_CXX_FOUND)
     target_link_libraries(apg_sgm PUBLIC OpenMP::OpenMP_CXX)
     target_compile_definitions(apg_sgm PUBLIC APG_SGM_OPENMP=1)
 endif()
+
+target_compile_definitions(apg_sgm PRIVATE APG_SGM_BUILDING_DLL)
 
 if(MSVC)
     target_compile_options(apg_sgm PRIVATE /W4)
@@ -96,6 +99,10 @@ add_test(NAME image_view COMMAND test_image_view)
 add_executable(test_observability tests/test_observability.cpp)
 target_link_libraries(test_observability PRIVATE apg_sgm)
 add_test(NAME observability COMMAND test_observability)
+
+add_executable(test_c_api tests/test_c_api.cpp)
+target_link_libraries(test_c_api PRIVATE apg_sgm)
+add_test(NAME c_api COMMAND test_c_api)
 
 # Installation & Package Export
 install(TARGETS apg_sgm
