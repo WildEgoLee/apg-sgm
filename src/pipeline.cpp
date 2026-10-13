@@ -231,8 +231,13 @@ Status StereoMatcher::compute_status(const ImageView8& left, const ImageView8& r
             workspace.allocated_bytes() > workspace.options().max_retained_bytes) {
             workspace.release();
             result.clear();
+            if (stats) stats->retained_workspace_bytes = 0;
             return Status(StatusCode::ResourceLimitExceeded, "workspace memory budget exceeded after compute");
         }
+    }
+
+    if (stats) {
+        stats->retained_workspace_bytes = workspace.allocated_bytes();
     }
 
     return Status::Ok();
@@ -441,6 +446,7 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
         const int n_pixels = w * h;
         double sum_width = 0.0;
         double sum_geom_width = 0.0;
+        size_t valid = 0;
         size_t reliable = 0;
         size_t unreliable = 0;
         size_t refine_changed = 0;
@@ -455,6 +461,10 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
                 const int glo = cfg_.min_disparity;
                 const int ghi = std::min(cfg_.max_disparity, x + 1);
                 sum_geom_width += (ghi > glo ? (ghi - glo) : 0);
+
+                if (!out.disparity.empty() && out.disparity.at(x, y) >= 0.0f) {
+                    ++valid;
+                }
 
                 if (!out.reliable_mask.empty() && out.reliable_mask.at(x, y)) {
                     ++reliable;
@@ -487,12 +497,15 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
         stats->prior_incremental_reduction_ratio = stats->mean_geometry_width > 0.0 ?
             (1.0 - stats->mean_search_width / stats->mean_geometry_width) : 0.0;
         stats->search_reduction_ratio = global_D > 0 ? (1.0 - stats->mean_search_width / global_D) : 0.0;
+        stats->valid_pixels = valid;
         stats->reliable_pixels = reliable;
         stats->unreliable_pixels = unreliable;
         stats->refine_changed_pixels = refine_changed;
         stats->lr_fail_pixels = lr_fail;
+        stats->peak_workspace_bytes = out.allocated_bytes();
 
         if (n_pixels > 0) {
+            stats->valid_disparity_ratio = static_cast<float>(valid) / n_pixels;
             stats->reliable_ratio = static_cast<float>(reliable) / n_pixels;
             stats->unreliable_ratio = static_cast<float>(unreliable) / n_pixels;
             stats->refine_changed_ratio = static_cast<float>(refine_changed) / n_pixels;
