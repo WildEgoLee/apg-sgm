@@ -11,6 +11,7 @@
 #include "apg_sgm/status.hpp"
 #include "apg_sgm/execution.hpp"
 #include "apg_sgm/workspace.hpp"
+#include "apg_sgm/image_view.hpp"
 #include "apg_sgm/session.hpp"
 #include "apg_sgm/ablation.hpp"
 

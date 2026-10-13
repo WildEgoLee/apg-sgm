@@ -22,8 +22,8 @@ public:
           workspace_(opt),
           matcher_(cfg_) {}
 
-    // Modern structured Status stream processing API
-    Status process_status(const Image8& left, const Image8& right, StereoResult& result,
+    // Modern structured Status stream processing API (with ImageView8)
+    Status process_status(const ImageView8& left, const ImageView8& right, StereoResult& result,
                           PipelineStats* stats = nullptr) {
         last_error_.clear();
         auto t0 = std::chrono::steady_clock::now();
@@ -40,11 +40,35 @@ public:
         return Status::Ok();
     }
 
-    // Modern public stream processing API (bool return)
-    bool process(const Image8& left, const Image8& right, StereoResult& result,
+    // StereoInputView Status overload
+    Status process_status(const StereoInputView& input, StereoResult& result,
+                          PipelineStats* stats = nullptr) {
+        return process_status(input.left, input.right, result, stats);
+    }
+
+    // Image8 Status overload
+    Status process_status(const Image8& left, const Image8& right, StereoResult& result,
+                          PipelineStats* stats = nullptr) {
+        return process_status(ImageView8(left), ImageView8(right), result, stats);
+    }
+
+    // Modern public stream processing API (with ImageView8, bool return)
+    bool process(const ImageView8& left, const ImageView8& right, StereoResult& result,
                  PipelineStats* stats = nullptr) {
         Status s = process_status(left, right, result, stats);
         return s.ok();
+    }
+
+    // StereoInputView bool overload
+    bool process(const StereoInputView& input, StereoResult& result,
+                 PipelineStats* stats = nullptr) {
+        return process(input.left, input.right, result, stats);
+    }
+
+    // Image8 bool overload
+    bool process(const Image8& left, const Image8& right, StereoResult& result,
+                 PipelineStats* stats = nullptr) {
+        return process(ImageView8(left), ImageView8(right), result, stats);
     }
 
     void reset() {
