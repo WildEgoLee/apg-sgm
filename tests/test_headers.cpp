@@ -7,6 +7,7 @@
 #include "apg_sgm/sgm_optimizer.hpp"
 #include "apg_sgm/refiner.hpp"
 #include "apg_sgm/pipeline.hpp"
+#include "apg_sgm/result.hpp"
 #include "apg_sgm/ablation.hpp"
 
 #include <iostream>
