@@ -103,13 +103,15 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Windows" ]; then
-            python -m pip install --upgrade pip scikit-build-core pybind11 pytest numpy
-            python -m pip install --no-build-isolation -e .
+            python -m pip install --upgrade pip build scikit-build-core pybind11 pytest numpy
+            python -m build --wheel --no-isolation
+            python -m pip install --force-reinstall dist/*.whl
             python -m pytest
           else
             export CC=${{ matrix.cc }}
             export CXX=${{ matrix.cxx }}
-            python3 -m pip install --break-system-packages scikit-build-core pybind11 pytest numpy || python3 -m pip install scikit-build-core pybind11 pytest numpy
-            python3 -m pip install --no-build-isolation -e .
+            python3 -m pip install --break-system-packages build scikit-build-core pybind11 pytest numpy || python3 -m pip install build scikit-build-core pybind11 pytest numpy
+            python3 -m build --wheel --no-isolation
+            python3 -m pip install --break-system-packages --force-reinstall dist/*.whl || python3 -m pip install --force-reinstall dist/*.whl
             python3 -m pytest
           fi

@@ -18,3 +18,5 @@ results/*.csv
 __pycache__/
 *.egg-info/
 .pytest_cache/
+dist/
+*.whl

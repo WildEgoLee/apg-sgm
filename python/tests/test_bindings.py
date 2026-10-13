@@ -403,3 +403,49 @@ def test_glue_overhead_smoke():
 
     # Catastrophic regression safety bound (loose for shared CI runners; strict benchmark runs separately)
     assert overhead_ratio < 0.15, f"Catastrophic glue overhead detected: {overhead_ratio * 100.0:.2f}%"
+
+
+def test_readonly_buffer_support():
+    """Verify read-only numpy buffers (flags.writeable = False) are accepted without copy/failure."""
+    left, right = make_synthetic_pair(64, 48, disparity_shift=3)
+    left_ro = left.copy()
+    right_ro = right.copy()
+    left_ro.flags.writeable = False
+    right_ro.flags.writeable = False
+
+    session = apg.StereoSession(mode="fast", max_disparity=16)
+    res_normal = session.process(left, right)
+    res_ro = session.process(left_ro, right_ro)
+
+    assert not res_ro.empty
+    assert np.array_equal(res_normal.disparity, res_ro.disparity)
+
+
+def test_metadata_bounds_and_overflow_rejection():
+    """Verify dimension bounds and invalid metadata are safely rejected with ValueError/TypeError."""
+    session = apg.StereoSession(mode="fast", max_disparity=16)
+
+    # 1. Zero dimension
+    zero_h = np.zeros((0, 64), dtype=np.uint8)
+    with pytest.raises(ValueError, match="strictly positive"):
+        session.process(zero_h, zero_h)
+
+    zero_w = np.zeros((48, 0), dtype=np.uint8)
+    with pytest.raises(ValueError, match="strictly positive"):
+        session.process(zero_w, zero_w)
+
+    # 2. Unsupported channels
+    four_c = np.zeros((48, 64, 4), dtype=np.uint8)
+    with pytest.raises(ValueError, match="must have 1 or 3 channels"):
+        session.process(four_c, four_c)
+
+    # 3. Invalid dtype
+    float_arr = np.zeros((48, 64), dtype=np.float32)
+    with pytest.raises(TypeError, match="uint8"):
+        session.process(float_arr, float_arr)
+
+    # 4. Dimension mismatch
+    left = np.zeros((48, 64), dtype=np.uint8)
+    mismatched = np.zeros((48, 32), dtype=np.uint8)
+    with pytest.raises(ValueError, match="Left and right images must have identical dimensions"):
+        session.process(left, mismatched)
