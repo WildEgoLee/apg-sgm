@@ -42,6 +42,24 @@ struct SupportMetrics {
     float support_grid_recall_vis_1 = 0.0f; // alias for grid_recall_1
 };
 
+struct RegionMetrics {
+    int total_pixels = 0;       // Valid GT pixels in this region
+    int valid_est_pixels = 0;   // Pixels where estimated disparity is valid (finite, >= 0)
+    float valid_ratio = 0.0f;   // valid_est_pixels / total_pixels
+    float epe = 0.0f;           // Mean Absolute Error on valid_est_pixels
+    float bad_0_5 = 0.0f;       // % with error > 0.5 px
+    float bad_1_0 = 0.0f;       // % with error > 1.0 px
+    float bad_2_0 = 0.0f;       // % with error > 2.0 px
+    float bad_3_0 = 0.0f;       // % with error > 3.0 px
+    float d1 = 0.0f;            // KITTI D1 outlier rate (% on total_pixels)
+};
+
+struct QualityThresholds {
+    float boundary_disparity_gradient = 1.0f; // px: gradient >= threshold marks disparity boundary
+    float low_texture_gradient = 4.0f;         // intensity gradient in [0, 255]: < threshold marks low texture
+    float max_valid_gt = 1e5f;
+};
+
 struct StereoMetrics {
     int total_pixels = 0;
     int evaluated_pixels = 0;
@@ -85,6 +103,15 @@ struct StereoMetrics {
     bool has_supports = false;
     SupportMetrics support_metrics;
 
+    // Regional Quality Breakdown (P5 Quality Benchmark Schema)
+    RegionMetrics reg_all;
+    RegionMetrics reg_noc;
+    RegionMetrics reg_occ;
+    RegionMetrics reg_boundary;
+    RegionMetrics reg_non_boundary;
+    RegionMetrics reg_low_texture;
+    RegionMetrics reg_high_texture;
+
     // Disentangled Refinement & Post-processing metrics (evaluated on identical pixel sets)
     bool has_refine_stats = false;
     int refine_eval_pixels = 0;
@@ -112,6 +139,8 @@ StereoMetrics evaluate_stereo(
     const Image32f* d_after_refine = nullptr,
     const Image8* vis_mask = nullptr,
     float max_valid_gt = 1e5f,
-    const std::vector<SupportMatch>* supports = nullptr);
+    const std::vector<SupportMatch>* supports = nullptr,
+    const Image8* left_image = nullptr,
+    const QualityThresholds& thresholds = QualityThresholds{});
 
 } // namespace apg
