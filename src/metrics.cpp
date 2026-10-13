@@ -124,7 +124,9 @@ StereoMetrics evaluate_stereo(
     const Image32f* d_after_refine,
     const Image8* vis_mask,
     float max_valid_gt,
-    const std::vector<SupportMatch>* supports) {
+    const std::vector<SupportMatch>* supports,
+    const Image8* left_image,
+    const QualityThresholds& thresholds) {
 
     StereoMetrics m;
     const int w = est.width();
@@ -157,7 +159,7 @@ StereoMetrics evaluate_stereo(
     int prior_miss_edge = 0;
     int prior_miss_nonedge = 0;
 
-    // Edge mask based on GT
+    // Disparity boundary mask based on GT gradient
     std::vector<uint8_t> is_edge(static_cast<size_t>(w) * h, 0);
     const int dxs[4] = {1, -1, 0, 0};
     const int dys[4] = {0, 0, 1, -1};
@@ -179,11 +181,99 @@ StereoMetrics evaluate_stereo(
                     }
                 }
             }
-            if (max_diff > 1.0f) {
+            if (max_diff >= thresholds.boundary_disparity_gradient) {
                 is_edge[static_cast<size_t>(y) * w + x] = 1;
             }
         }
     }
+
+    // Low texture mask based on input image luminance gradient
+    std::vector<uint8_t> is_low_tex;
+    const bool has_left_img = (left_image && !left_image->empty() &&
+                               left_image->width() == w && left_image->height() == h);
+    if (has_left_img) {
+        is_low_tex.assign(static_cast<size_t>(w) * h, 0);
+        auto get_luma = [&](int px, int py) -> float {
+            if (left_image->channels() == 1) {
+                return static_cast<float>(left_image->at(px, py));
+            } else {
+                return 0.299f * left_image->at(px, py, 0) +
+                       0.587f * left_image->at(px, py, 1) +
+                       0.114f * left_image->at(px, py, 2);
+            }
+        };
+
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                const int x_prev = std::max(0, x - 1);
+                const int x_next = std::min(w - 1, x + 1);
+                const int y_prev = std::max(0, y - 1);
+                const int y_next = std::min(h - 1, y + 1);
+                const float dx_scale = (x == 0 || x == w - 1) ? 1.0f : 2.0f;
+                const float dy_scale = (y == 0 || y == h - 1) ? 1.0f : 2.0f;
+                const float dx = (get_luma(x_next, y) - get_luma(x_prev, y)) / dx_scale;
+                const float dy = (get_luma(x, y_next) - get_luma(x, y_prev)) / dy_scale;
+                const float grad = std::sqrt(dx * dx + dy * dy);
+                if (grad < thresholds.low_texture_gradient) {
+                    is_low_tex[static_cast<size_t>(y) * w + x] = 1;
+                }
+            }
+        }
+    }
+
+    struct RegionAccumulator {
+        int total_pixels = 0;
+        int valid_est_pixels = 0;
+        double sum_epe = 0.0;
+        int count_0_5 = 0;
+        int count_1_0 = 0;
+        int count_2_0 = 0;
+        int count_3_0 = 0;
+        int d1_outliers = 0;
+
+        void add(float e, float g) {
+            total_pixels++;
+            const bool is_est_valid = std::isfinite(e) && e >= 0.0f;
+            const float diff = is_est_valid ? std::abs(e - g) : 1e9f;
+            const bool is_d1 = (!is_est_valid) || (diff > 3.0f && (g > 1e-3f ? (diff / g > 0.05f) : true));
+            if (is_d1) d1_outliers++;
+
+            if (is_est_valid) {
+                valid_est_pixels++;
+                sum_epe += diff;
+                if (diff > 0.5f) count_0_5++;
+                if (diff > 1.0f) count_1_0++;
+                if (diff > 2.0f) count_2_0++;
+                if (diff > 3.0f) count_3_0++;
+            }
+        }
+
+        RegionMetrics finalize() const {
+            RegionMetrics rm;
+            rm.total_pixels = total_pixels;
+            rm.valid_est_pixels = valid_est_pixels;
+            if (total_pixels > 0) {
+                rm.valid_ratio = static_cast<float>(valid_est_pixels) / static_cast<float>(total_pixels);
+                rm.d1 = static_cast<float>(d1_outliers) * 100.0f / static_cast<float>(total_pixels);
+            }
+            if (valid_est_pixels > 0) {
+                rm.epe = static_cast<float>(sum_epe / valid_est_pixels);
+                rm.bad_0_5 = static_cast<float>(count_0_5) * 100.0f / static_cast<float>(valid_est_pixels);
+                rm.bad_1_0 = static_cast<float>(count_1_0) * 100.0f / static_cast<float>(valid_est_pixels);
+                rm.bad_2_0 = static_cast<float>(count_2_0) * 100.0f / static_cast<float>(valid_est_pixels);
+                rm.bad_3_0 = static_cast<float>(count_3_0) * 100.0f / static_cast<float>(valid_est_pixels);
+            }
+            return rm;
+        }
+    };
+
+    RegionAccumulator acc_all;
+    RegionAccumulator acc_noc;
+    RegionAccumulator acc_occ;
+    RegionAccumulator acc_bnd;
+    RegionAccumulator acc_nonbnd;
+    RegionAccumulator acc_lowtex;
+    RegionAccumulator acc_hightex;
 
     double sum_edge_epe = 0.0;
     double sum_nonedge_epe = 0.0;
@@ -249,6 +339,8 @@ StereoMetrics evaluate_stereo(
                 }
             }
 
+            const bool edge = (is_edge[static_cast<size_t>(y) * w + x] != 0);
+
             const float e = est.at(x, y);
             if (!std::isfinite(e) || e < 0.0f) {
                 lr_fail_count++;
@@ -262,7 +354,6 @@ StereoMetrics evaluate_stereo(
                 if (diff > 2.0f) count_2_0++;
                 if (diff > 3.0f) count_3_0++;
 
-                const bool edge = (is_edge[static_cast<size_t>(y) * w + x] != 0);
                 if (edge) {
                     m.edge_pixels++;
                     sum_edge_epe += diff;
@@ -278,6 +369,26 @@ StereoMetrics evaluate_stereo(
             if (is_visible) {
                 eval_noc_count++;
                 if (is_d1_outlier) kitti_d1_noc_count++;
+            }
+
+            // Accumulate regional statistics
+            acc_all.add(e, g);
+            if (is_visible) {
+                acc_noc.add(e, g);
+            } else {
+                acc_occ.add(e, g);
+            }
+            if (edge) {
+                acc_bnd.add(e, g);
+            } else {
+                acc_nonbnd.add(e, g);
+            }
+            if (has_left_img) {
+                if (is_low_tex[static_cast<size_t>(y) * w + x]) {
+                    acc_lowtex.add(e, g);
+                } else {
+                    acc_hightex.add(e, g);
+                }
             }
 
             if (has_refine_data) {
@@ -379,6 +490,14 @@ StereoMetrics evaluate_stereo(
         m.post_epe_delta = static_cast<float>((sum_total_final - sum_total_after) / total_eval_count);
         m.total_epe_delta = static_cast<float>((sum_total_final - sum_total_before) / total_eval_count);
     }
+
+    m.reg_all = acc_all.finalize();
+    m.reg_noc = acc_noc.finalize();
+    m.reg_occ = acc_occ.finalize();
+    m.reg_boundary = acc_bnd.finalize();
+    m.reg_non_boundary = acc_nonbnd.finalize();
+    m.reg_low_texture = acc_lowtex.finalize();
+    m.reg_high_texture = acc_hightex.finalize();
 
     return m;
 }

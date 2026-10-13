@@ -338,7 +338,15 @@ int main(int argc, char** argv) {
         << "mean_search_width,mean_geom_width,geom_reduction_ratio,prior_incremental_reduction,total_reduction_ratio,"
         << "cost_bytes,cost32_bytes,peak_bytes,"
         << "reliable_ratio,unreliable_ratio,refine_changed_ratio,refine_epe_delta,post_epe_delta,total_epe_delta,"
-        << "time_total_ms,time_aux_ms,time_prior_ms,time_cost_ms,time_right_wta_ms,time_cross_ms,time_sgm_ms,time_wta_ms,time_confidence_ms,time_refine_ms,time_post_ms\n";
+        << "time_total_ms,time_aux_ms,time_prior_ms,time_cost_ms,time_right_wta_ms,time_cross_ms,time_sgm_ms,time_wta_ms,time_confidence_ms,time_refine_ms,time_post_ms,"
+        << "all_gt_pixels,all_valid_ratio,all_epe,all_bad05,all_bad10,all_bad20,all_bad30,all_d1,"
+        << "noc_pixels,noc_valid_ratio,noc_epe,noc_bad05,noc_bad10,noc_bad20,noc_bad30,noc_d1,"
+        << "occ_pixels,occ_valid_ratio,occ_epe,occ_bad05,occ_bad10,occ_bad20,occ_bad30,occ_d1,"
+        << "bnd_pixels,bnd_valid_ratio,bnd_epe,bnd_bad05,bnd_bad10,bnd_bad20,bnd_bad30,bnd_d1,"
+        << "nonbnd_pixels,nonbnd_valid_ratio,nonbnd_epe,nonbnd_bad05,nonbnd_bad10,nonbnd_bad20,nonbnd_bad30,nonbnd_d1,"
+        << "lowtex_pixels,lowtex_valid_ratio,lowtex_epe,lowtex_bad05,lowtex_bad10,lowtex_bad20,lowtex_bad30,lowtex_d1,"
+        << "hightex_pixels,hightex_valid_ratio,hightex_epe,hightex_bad05,hightex_bad10,hightex_bad20,hightex_bad30,hightex_d1,"
+        << "peak_workspace_bytes,retained_workspace_bytes\n";
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
@@ -427,7 +435,7 @@ int main(int argc, char** argv) {
                 const apg::Image32f* after_refine_ptr = cfg.refine.enable ? &bufs.d_after_refine : nullptr;
                 const apg::Image8* vis_ptr = has_vis ? &vis_mask : nullptr;
                 const std::vector<apg::SupportMatch>* supp_ptr = cfg.prior.enable ? &bufs.supports : nullptr;
-                m = apg::evaluate_stereo(bufs.disparity, gt_disp, range_ptr, before_refine_ptr, after_refine_ptr, vis_ptr, 1e5f, supp_ptr);
+                m = apg::evaluate_stereo(bufs.disparity, gt_disp, range_ptr, before_refine_ptr, after_refine_ptr, vis_ptr, 1e5f, supp_ptr, &left_img);
             }
 
             std::string id_str = apg::ablation_id_to_string(aid);
@@ -443,8 +451,14 @@ int main(int argc, char** argv) {
             std::cout << "[" << id_str << "] " << std::setw(32) << std::left << desc_str
                       << " | EPE: " << std::setw(6) << std::fixed << std::setprecision(3) << (has_gt ? m.epe : -1.f)
                       << " | Bad2.0: " << std::setw(5) << std::setprecision(1) << (has_gt ? m.bad_2_0 : -1.f) << "%"
-                      << " | D1-all: " << std::setw(5) << std::setprecision(1) << (has_gt ? m.kitti_d1_all : -1.f) << "%"
-                      << " | D_bar: " << std::setw(4) << std::setprecision(1) << best_sample.stats.mean_search_width;
+                      << " | D1-all: " << std::setw(5) << std::setprecision(1) << (has_gt ? m.kitti_d1_all : -1.f) << "%";
+            if (has_gt) {
+                std::cout << " [Noc: " << std::setw(4) << std::setprecision(1) << m.reg_noc.bad_2_0 << "%"
+                          << ", Occ: " << std::setw(4) << std::setprecision(1) << m.reg_occ.bad_2_0 << "%"
+                          << ", Bnd: " << std::setw(4) << std::setprecision(1) << m.reg_boundary.bad_2_0 << "%"
+                          << ", LowTex: " << std::setw(4) << std::setprecision(1) << m.reg_low_texture.bad_2_0 << "%]";
+            }
+            std::cout << " | D_bar: " << std::setw(4) << std::setprecision(1) << best_sample.stats.mean_search_width;
             if (cfg.prior.enable && has_gt && m.has_range) {
                 std::cout << " | Rec(vis): " << std::setw(5) << std::setprecision(1) << (m.range_recall_visible * 100.0f) << "%";
                 if (m.has_supports) {
@@ -561,7 +575,66 @@ int main(int argc, char** argv) {
                 << best_sample.stats.timing.wta_ms << ","
                 << best_sample.stats.timing.confidence_ms << ","
                 << best_sample.stats.timing.refine_ms << ","
-                << best_sample.stats.timing.post_ms << "\n";
+                << best_sample.stats.timing.post_ms << ","
+                << m.reg_all.total_pixels << ","
+                << std::setprecision(4)
+                << m.reg_all.valid_ratio << ","
+                << m.reg_all.epe << ","
+                << m.reg_all.bad_0_5 << ","
+                << m.reg_all.bad_1_0 << ","
+                << m.reg_all.bad_2_0 << ","
+                << m.reg_all.bad_3_0 << ","
+                << m.reg_all.d1 << ","
+                << m.reg_noc.total_pixels << ","
+                << m.reg_noc.valid_ratio << ","
+                << m.reg_noc.epe << ","
+                << m.reg_noc.bad_0_5 << ","
+                << m.reg_noc.bad_1_0 << ","
+                << m.reg_noc.bad_2_0 << ","
+                << m.reg_noc.bad_3_0 << ","
+                << m.reg_noc.d1 << ","
+                << m.reg_occ.total_pixels << ","
+                << m.reg_occ.valid_ratio << ","
+                << m.reg_occ.epe << ","
+                << m.reg_occ.bad_0_5 << ","
+                << m.reg_occ.bad_1_0 << ","
+                << m.reg_occ.bad_2_0 << ","
+                << m.reg_occ.bad_3_0 << ","
+                << m.reg_occ.d1 << ","
+                << m.reg_boundary.total_pixels << ","
+                << m.reg_boundary.valid_ratio << ","
+                << m.reg_boundary.epe << ","
+                << m.reg_boundary.bad_0_5 << ","
+                << m.reg_boundary.bad_1_0 << ","
+                << m.reg_boundary.bad_2_0 << ","
+                << m.reg_boundary.bad_3_0 << ","
+                << m.reg_boundary.d1 << ","
+                << m.reg_non_boundary.total_pixels << ","
+                << m.reg_non_boundary.valid_ratio << ","
+                << m.reg_non_boundary.epe << ","
+                << m.reg_non_boundary.bad_0_5 << ","
+                << m.reg_non_boundary.bad_1_0 << ","
+                << m.reg_non_boundary.bad_2_0 << ","
+                << m.reg_non_boundary.bad_3_0 << ","
+                << m.reg_non_boundary.d1 << ","
+                << m.reg_low_texture.total_pixels << ","
+                << m.reg_low_texture.valid_ratio << ","
+                << m.reg_low_texture.epe << ","
+                << m.reg_low_texture.bad_0_5 << ","
+                << m.reg_low_texture.bad_1_0 << ","
+                << m.reg_low_texture.bad_2_0 << ","
+                << m.reg_low_texture.bad_3_0 << ","
+                << m.reg_low_texture.d1 << ","
+                << m.reg_high_texture.total_pixels << ","
+                << m.reg_high_texture.valid_ratio << ","
+                << m.reg_high_texture.epe << ","
+                << m.reg_high_texture.bad_0_5 << ","
+                << m.reg_high_texture.bad_1_0 << ","
+                << m.reg_high_texture.bad_2_0 << ","
+                << m.reg_high_texture.bad_3_0 << ","
+                << m.reg_high_texture.d1 << ","
+                << ((best_sample.stats.peak_workspace_bytes > 0) ? best_sample.stats.peak_workspace_bytes : best_sample.stats.estimated_peak_bytes) << ","
+                << best_sample.stats.retained_workspace_bytes << "\n";
             csv.flush();
 
             // Save disparity maps if requested

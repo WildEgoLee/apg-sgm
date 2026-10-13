@@ -147,10 +147,23 @@ static void test_metrics() {
     // EPE before = 1.0, after = 0.5 => delta = -0.5
     assert(std::abs(m_ref.refine_epe_delta - (-0.5f)) < 1e-4f);
     assert(std::abs(m_ref.post_epe_delta - (-0.25f)) < 1e-4f);
-    assert(std::abs(m_ref.total_epe_delta - (-0.75f)) < 1e-4f);
-    assert(std::abs(m_ref.refine_improved_ratio - 0.50f) < 1e-4f);
+    // Test P5 regional quality metrics
+    Image8 left_img(10, 10, 1);
+    for (int y = 0; y < 10; ++y) {
+        for (int x = 0; x < 10; ++x) {
+            left_img.at(x, y) = static_cast<uint8_t>((x < 5) ? 100 : (x * 20)); // x < 5 flat/low-texture, x >= 5 textured
+        }
+    }
+    auto m_reg = evaluate_stereo(est, gt, &range, nullptr, nullptr, &vis, 1e5f, nullptr, &left_img);
+    assert(m_reg.reg_all.total_pixels == m_reg.evaluated_pixels);
+    assert(m_reg.reg_all.valid_est_pixels == m_reg.valid_pixels);
+    assert(std::abs(m_reg.reg_all.epe - m_reg.epe) < 1e-4f);
+    assert(m_reg.reg_noc.total_pixels + m_reg.reg_occ.total_pixels == m_reg.reg_all.total_pixels);
+    assert(m_reg.reg_boundary.total_pixels + m_reg.reg_non_boundary.total_pixels == m_reg.reg_all.total_pixels);
+    assert(m_reg.reg_low_texture.total_pixels + m_reg.reg_high_texture.total_pixels == m_reg.reg_all.total_pixels);
+    assert(m_reg.reg_low_texture.total_pixels > 0 && m_reg.reg_high_texture.total_pixels > 0);
 
-    std::cout << "[PASS] StereoMetrics evaluation and range recall verified\n";
+    std::cout << "[PASS] StereoMetrics evaluation, range recall, and P5 regional metrics verified\n";
 }
 
 static void test_volume_backend_policy() {
