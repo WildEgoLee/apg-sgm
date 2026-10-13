@@ -29,6 +29,14 @@ struct PipelineStats {
     size_t estimated_peak_bytes = 0;
     size_t peak_workspace_bytes = 0;
     size_t retained_workspace_bytes = 0;
+    size_t allocation_count = 0;
+    size_t reuse_count = 0;
+
+    int requested_threads = 0;
+    int effective_threads = 0;
+    std::string requested_backend = "Auto";
+    std::string resolved_backend = "Dense";
+    std::string memory_policy = "ReleasePerFrame";
 
     size_t prior_support_count = 0;
     double mean_search_width = 0.0;
@@ -65,6 +73,14 @@ struct PipelineStats {
         oss << "  Confidence: " << timing.confidence_ms << "\n";
         oss << "  Refine:     " << timing.refine_ms << "\n";
         oss << "  Post:       " << timing.post_ms << "\n";
+        oss << "Execution & Environment:\n";
+        oss << "  Requested Threads:  " << requested_threads << "\n";
+        oss << "  Effective Threads:  " << effective_threads << "\n";
+        oss << "  Requested Backend:  " << requested_backend << "\n";
+        oss << "  Resolved Backend:   " << resolved_backend << "\n";
+        oss << "  Memory Policy:      " << memory_policy << "\n";
+        oss << "  Allocations:        " << allocation_count << "\n";
+        oss << "  Reuses:             " << reuse_count << "\n";
         oss << "Memory Accounting:\n";
         oss << "  Peak Workspace:     " << peak_workspace_bytes / (1024.0 * 1024.0) << " MB\n";
         oss << "  Retained Workspace: " << retained_workspace_bytes / (1024.0 * 1024.0) << " MB\n";
@@ -81,6 +97,15 @@ struct PipelineStats {
         std::ostringstream oss;
         oss << std::fixed << std::setprecision(3);
         oss << "{\n";
+        oss << "  \"execution\": {\n";
+        oss << "    \"requested_threads\": " << requested_threads << ",\n";
+        oss << "    \"effective_threads\": " << effective_threads << ",\n";
+        oss << "    \"requested_backend\": \"" << requested_backend << "\",\n";
+        oss << "    \"resolved_backend\": \"" << resolved_backend << "\",\n";
+        oss << "    \"memory_policy\": \"" << memory_policy << "\",\n";
+        oss << "    \"allocation_count\": " << allocation_count << ",\n";
+        oss << "    \"reuse_count\": " << reuse_count << "\n";
+        oss << "  },\n";
         oss << "  \"timing\": {\n";
         oss << "    \"total_ms\": " << timing.total_ms << ",\n";
         oss << "    \"aux_ms\": " << timing.aux_ms << ",\n";

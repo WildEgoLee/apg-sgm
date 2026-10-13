@@ -59,8 +59,20 @@ typedef struct {
 typedef struct apg_session_s* apg_session_t;
 typedef struct apg_result_s* apg_result_t;
 
+/* Session options */
+typedef struct {
+    int quality_mode;          /* APG_QUALITY_FAST, BALANCED, HIGH_QUALITY */
+    int memory_policy;         /* APG_MEMORY_RELEASE_PER_FRAME, BOUNDED_REUSE */
+    size_t max_retained_bytes; /* 0 = unconstrained */
+    int num_threads;           /* 0 = default */
+    int backend;               /* 0 = Auto, 1 = Dense, 2 = Packed */
+    int min_disparity;         /* e.g. 0 */
+    int max_disparity;         /* e.g. 64, 128 */
+} apg_session_options_t;
+
 /* Lifecycle */
 APG_API apg_session_t apg_session_create(int quality_mode, int memory_policy);
+APG_API apg_session_t apg_session_create_ex(const apg_session_options_t* options);
 APG_API void apg_session_destroy(apg_session_t session);
 APG_API void apg_session_reset(apg_session_t session);
 

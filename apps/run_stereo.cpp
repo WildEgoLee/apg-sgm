@@ -11,7 +11,7 @@ static void usage(const char* argv0) {
     std::cerr
         << "Usage: " << argv0
         << " left.pgm right.pgm out.pgm [--mode fast|balanced|high] [--disp-max N] [--threads N]\n"
-        << "                          [--backend auto|dense|packed] [--packed]\n"
+        << "                          [--backend auto|dense|packed] [--packed] [--stats] [--stats-json]\n"
         << "Inputs: binary PGM (P5) or PPM (P6). Images must already be rectified.\n";
 }
 
@@ -34,6 +34,8 @@ int main(int argc, char** argv) {
     int dmax = 128;
     int threads = 0;
     std::string backend_arg = "auto";
+    bool print_stats = false;
+    bool print_stats_json = false;
     for (int i = 4; i < argc; ++i) {
         if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             mode = parse_mode(argv[++i]);
@@ -45,6 +47,10 @@ int main(int argc, char** argv) {
             backend_arg = argv[++i];
         } else if (std::strcmp(argv[i], "--packed") == 0) {
             backend_arg = "packed";
+        } else if (std::strcmp(argv[i], "--stats") == 0) {
+            print_stats = true;
+        } else if (std::strcmp(argv[i], "--stats-json") == 0) {
+            print_stats_json = true;
         } else {
             usage(argv[0]);
             return 1;
@@ -78,9 +84,10 @@ int main(int argc, char** argv) {
     cfg.volume_backend = volume_backend;
     StereoMatcher matcher(cfg);
     PipelineBuffers buf;
+    PipelineStats stats;
 
     const auto t0 = std::chrono::steady_clock::now();
-    if (!matcher.compute(left, right, buf)) {
+    if (!matcher.compute(left, right, buf, &stats)) {
         std::cerr << "compute failed: " << matcher.last_error() << "\n";
         return 1;
     }
@@ -100,5 +107,12 @@ int main(int argc, char** argv) {
               << "  " << ms << " ms\n"
               << "disparity preview: " << out_path << "\n"
               << "confidence preview: " << conf_path << "\n";
+
+    if (print_stats) {
+        std::cout << stats.to_string();
+    }
+    if (print_stats_json) {
+        std::cout << stats.to_json() << "\n";
+    }
     return 0;
 }

@@ -1,13 +1,20 @@
 cmake_minimum_required(VERSION 3.16)
-project(apg_sgm LANGUAGES CXX)
+project(apg_sgm LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
+
+option(APG_SGM_BUILD_APPS "Build CLI applications" ON)
+option(APG_SGM_BUILD_TESTS "Build test suite" ON)
+option(APG_SGM_BUILD_BENCHMARKS "Build benchmark executables" ON)
 
 add_library(apg_sgm
     src/image.cpp
@@ -52,57 +59,71 @@ else()
     set_source_files_properties(src/sgm_optimizer_avx2.cpp src/cost_aggregator_avx2.cpp src/cost_computer_avx2.cpp src/refiner_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
 endif()
 
-add_executable(apg-stereo apps/run_stereo.cpp)
-target_link_libraries(apg-stereo PRIVATE apg_sgm)
+if(APG_SGM_BUILD_APPS)
+    add_executable(apg-stereo apps/run_stereo.cpp)
+    target_link_libraries(apg-stereo PRIVATE apg_sgm)
+endif()
 
-add_executable(apg-benchmark apps/benchmark_stereo.cpp)
-target_link_libraries(apg-benchmark PRIVATE apg_sgm)
+if(APG_SGM_BUILD_BENCHMARKS)
+    add_executable(apg-benchmark apps/benchmark_stereo.cpp)
+    target_link_libraries(apg-benchmark PRIVATE apg_sgm)
+endif()
 
-enable_testing()
-add_executable(apg_sgm_tests tests/test_sanity.cpp)
-target_include_directories(apg_sgm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(apg_sgm_tests PRIVATE apg_sgm)
-add_test(NAME sanity COMMAND apg_sgm_tests)
+if(APG_SGM_BUILD_TESTS)
+    enable_testing()
+    add_executable(apg_sgm_tests tests/test_sanity.cpp)
+    target_include_directories(apg_sgm_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(apg_sgm_tests PRIVATE apg_sgm)
+    add_test(NAME sanity COMMAND apg_sgm_tests)
 
-add_executable(test_synthetic tests/test_synthetic.cpp)
-target_link_libraries(test_synthetic PRIVATE apg_sgm)
-add_test(NAME synthetic COMMAND test_synthetic)
+    add_executable(test_synthetic tests/test_synthetic.cpp)
+    target_link_libraries(test_synthetic PRIVATE apg_sgm)
+    add_test(NAME synthetic COMMAND test_synthetic)
 
-add_executable(test_ablation tests/test_ablation.cpp)
-target_link_libraries(test_ablation PRIVATE apg_sgm)
-add_test(NAME ablation COMMAND test_ablation)
+    add_executable(test_ablation tests/test_ablation.cpp)
+    target_link_libraries(test_ablation PRIVATE apg_sgm)
+    add_test(NAME ablation COMMAND test_ablation)
 
-add_executable(test_headers tests/test_headers.cpp)
-target_link_libraries(test_headers PRIVATE apg_sgm)
-add_test(NAME headers COMMAND test_headers)
+    add_executable(test_headers tests/test_headers.cpp)
+    target_link_libraries(test_headers PRIVATE apg_sgm)
+    add_test(NAME headers COMMAND test_headers)
 
-add_executable(test_api_contract tests/test_api_contract.cpp)
-target_link_libraries(test_api_contract PRIVATE apg_sgm)
-add_test(NAME api_contract COMMAND test_api_contract)
+    add_executable(test_api_contract tests/test_api_contract.cpp)
+    target_link_libraries(test_api_contract PRIVATE apg_sgm)
+    add_test(NAME api_contract COMMAND test_api_contract)
 
-add_executable(test_status tests/test_status.cpp)
-target_link_libraries(test_status PRIVATE apg_sgm)
-add_test(NAME status COMMAND test_status)
+    add_executable(test_status tests/test_status.cpp)
+    target_link_libraries(test_status PRIVATE apg_sgm)
+    add_test(NAME status COMMAND test_status)
 
-add_executable(test_workspace tests/test_workspace.cpp)
-target_link_libraries(test_workspace PRIVATE apg_sgm)
-add_test(NAME workspace COMMAND test_workspace)
+    add_executable(test_workspace tests/test_workspace.cpp)
+    target_link_libraries(test_workspace PRIVATE apg_sgm)
+    add_test(NAME workspace COMMAND test_workspace)
 
-add_executable(test_session tests/test_session.cpp)
-target_link_libraries(test_session PRIVATE apg_sgm)
-add_test(NAME session COMMAND test_session)
+    add_executable(test_session tests/test_session.cpp)
+    target_link_libraries(test_session PRIVATE apg_sgm)
+    add_test(NAME session COMMAND test_session)
 
-add_executable(test_image_view tests/test_image_view.cpp)
-target_link_libraries(test_image_view PRIVATE apg_sgm)
-add_test(NAME image_view COMMAND test_image_view)
+    add_executable(test_image_view tests/test_image_view.cpp)
+    target_link_libraries(test_image_view PRIVATE apg_sgm)
+    add_test(NAME image_view COMMAND test_image_view)
 
-add_executable(test_observability tests/test_observability.cpp)
-target_link_libraries(test_observability PRIVATE apg_sgm)
-add_test(NAME observability COMMAND test_observability)
+    add_executable(test_observability tests/test_observability.cpp)
+    target_link_libraries(test_observability PRIVATE apg_sgm)
+    add_test(NAME observability COMMAND test_observability)
 
-add_executable(test_c_api tests/test_c_api.cpp)
-target_link_libraries(test_c_api PRIVATE apg_sgm)
-add_test(NAME c_api COMMAND test_c_api)
+    add_executable(test_c_api tests/test_c_api.cpp)
+    target_link_libraries(test_c_api PRIVATE apg_sgm)
+    add_test(NAME c_api COMMAND test_c_api)
+
+    add_executable(test_hardening tests/test_hardening.cpp)
+    target_link_libraries(test_hardening PRIVATE apg_sgm)
+    add_test(NAME hardening COMMAND test_hardening)
+
+    add_executable(c_api_smoke tests/c_api_smoke.c)
+    target_link_libraries(c_api_smoke PRIVATE apg_sgm)
+    add_test(NAME c_api_smoke COMMAND c_api_smoke)
+endif()
 
 # Installation & Package Export
 install(TARGETS apg_sgm
@@ -116,9 +137,12 @@ install(DIRECTORY include/apg_sgm
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
-install(TARGETS apg-stereo apg-benchmark
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+if(APG_SGM_BUILD_APPS)
+    install(TARGETS apg-stereo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+if(APG_SGM_BUILD_BENCHMARKS)
+    install(TARGETS apg-benchmark RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 
 install(EXPORT apg_sgmTargets
     FILE apg_sgmTargets.cmake

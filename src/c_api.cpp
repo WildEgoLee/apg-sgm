@@ -11,8 +11,8 @@ struct apg_session_s {
     apg::StereoSession session;
     std::string last_error;
 
-    apg_session_s(apg::QualityMode qm, apg::MemoryPolicy mp)
-        : session(apg::PipelineConfig::from_mode(qm), apg::ExecutionOptions{mp, 0, 0}) {}
+    apg_session_s(apg::PipelineConfig cfg, apg::ExecutionOptions opt)
+        : session(std::move(cfg), opt) {}
 };
 
 struct apg_result_s {
@@ -20,19 +20,50 @@ struct apg_result_s {
 };
 
 apg_session_t apg_session_create(int quality_mode, int memory_policy) {
+    apg_session_options_t opts = {};
+    opts.quality_mode = quality_mode;
+    opts.memory_policy = memory_policy;
+    opts.max_retained_bytes = 0;
+    opts.num_threads = 0;
+    opts.backend = 0;
+    opts.min_disparity = 0;
+    opts.max_disparity = 128;
+    return apg_session_create_ex(&opts);
+}
+
+apg_session_t apg_session_create_ex(const apg_session_options_t* options) {
+    if (!options) return nullptr;
     try {
         apg::QualityMode qm = apg::QualityMode::Balanced;
-        if (quality_mode == APG_QUALITY_FAST) {
+        if (options->quality_mode == APG_QUALITY_FAST) {
             qm = apg::QualityMode::Fast;
-        } else if (quality_mode == APG_QUALITY_HIGH_QUALITY) {
+        } else if (options->quality_mode == APG_QUALITY_HIGH_QUALITY) {
             qm = apg::QualityMode::HighQuality;
         }
 
-        apg::MemoryPolicy mp = (memory_policy == APG_MEMORY_BOUNDED_REUSE)
+        int max_disp = options->max_disparity > options->min_disparity ? options->max_disparity : 128;
+        auto cfg = apg::PipelineConfig::from_mode(qm, max_disp);
+        cfg.min_disparity = options->min_disparity;
+        cfg.max_disparity = max_disp;
+        if (options->backend == 1) {
+            cfg.volume_backend = apg::VolumeBackend::Dense;
+        } else if (options->backend == 2) {
+            cfg.volume_backend = apg::VolumeBackend::Packed;
+        } else {
+            cfg.volume_backend = apg::VolumeBackend::Auto;
+        }
+        cfg.num_threads = options->num_threads;
+
+        apg::MemoryPolicy mp = (options->memory_policy == APG_MEMORY_BOUNDED_REUSE)
                                    ? apg::MemoryPolicy::BoundedReuse
                                    : apg::MemoryPolicy::ReleasePerFrame;
 
-        return new apg_session_s(qm, mp);
+        apg::ExecutionOptions exec_opts;
+        exec_opts.memory_policy = mp;
+        exec_opts.max_retained_bytes = options->max_retained_bytes;
+        exec_opts.num_threads = options->num_threads;
+
+        return new apg_session_s(std::move(cfg), exec_opts);
     } catch (...) {
         return nullptr;
     }
