@@ -83,12 +83,6 @@ if(APG_SGM_BUILD_PYTHON)
 
     pybind11_add_module(_core python/src/binding.cpp)
     target_link_libraries(_core PRIVATE apg_sgm)
-    set_target_properties(_core PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/apg_sgm"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/apg_sgm"
-        LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/python/apg_sgm"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/python/apg_sgm"
-    )
     install(TARGETS _core DESTINATION apg_sgm)
 endif()
 
@@ -158,45 +152,47 @@ if(APG_SGM_BUILD_TESTS)
     add_test(NAME c_api_smoke COMMAND c_api_smoke)
 endif()
 
-# Installation & Package Export
-install(TARGETS apg_sgm
-    EXPORT apg_sgmTargets
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+# Installation & Package Export (for C++ SDK)
+if(NOT APG_SGM_BUILD_PYTHON)
+    install(TARGETS apg_sgm
+        EXPORT apg_sgmTargets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    )
 
-install(DIRECTORY include/apg_sgm
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
+    install(DIRECTORY include/apg_sgm
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+    )
 
-if(APG_SGM_BUILD_APPS)
-    install(TARGETS apg-stereo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    if(APG_SGM_BUILD_APPS)
+        install(TARGETS apg-stereo RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+    if(APG_SGM_BUILD_BENCHMARKS)
+        install(TARGETS apg-benchmark RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+
+    install(EXPORT apg_sgmTargets
+        FILE apg_sgmTargets.cmake
+        NAMESPACE apg_sgm::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/apg_sgm
+    )
+
+    write_basic_package_version_file(
+        ${CMAKE_CURRENT_BINARY_DIR}/apg_sgmConfigVersion.cmake
+        VERSION 1.0.0
+        COMPATIBILITY SameMajorVersion
+    )
+
+    configure_package_config_file(
+        ${CMAKE_CURRENT_SOURCE_DIR}/cmake/apg_sgmConfig.cmake.in
+        ${CMAKE_CURRENT_BINARY_DIR}/apg_sgmConfig.cmake
+        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/apg_sgm
+    )
+
+    install(FILES
+        ${CMAKE_CURRENT_BINARY_DIR}/apg_sgmConfig.cmake
+        ${CMAKE_CURRENT_BINARY_DIR}/apg_sgmConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/apg_sgm
+    )
 endif()
-if(APG_SGM_BUILD_BENCHMARKS)
-    install(TARGETS apg-benchmark RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-endif()
-
-install(EXPORT apg_sgmTargets
-    FILE apg_sgmTargets.cmake
-    NAMESPACE apg_sgm::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/apg_sgm
-)
-
-write_basic_package_version_file(
-    ${CMAKE_CURRENT_BINARY_DIR}/apg_sgmConfigVersion.cmake
-    VERSION 1.0.0
-    COMPATIBILITY SameMajorVersion
-)
-
-configure_package_config_file(
-    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/apg_sgmConfig.cmake.in
-    ${CMAKE_CURRENT_BINARY_DIR}/apg_sgmConfig.cmake
-    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/apg_sgm
-)
-
-install(FILES
-    ${CMAKE_CURRENT_BINARY_DIR}/apg_sgmConfig.cmake
-    ${CMAKE_CURRENT_BINARY_DIR}/apg_sgmConfigVersion.cmake
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/apg_sgm
-)

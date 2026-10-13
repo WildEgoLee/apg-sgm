@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -34,7 +35,7 @@ struct InputBufferHolder {
 // Extracts an apg::ImageView8 from a Python buffer (NumPy ndarray)
 // Implements zero-copy wrapping for row-strided (pitch-padded) C-order arrays.
 InputBufferHolder make_image_view(const py::buffer& buf, const std::string& name) {
-    py::buffer_info info = buf.request();
+    py::buffer_info info = buf.request(false);
 
     if (info.itemsize != sizeof(uint8_t) ||
         info.format != py::format_descriptor<uint8_t>::format()) {
@@ -45,24 +46,42 @@ InputBufferHolder make_image_view(const py::buffer& buf, const std::string& name
         throw py::value_error(name + " must be 2D (H, W) or 3D (H, W, C), got " + std::to_string(info.ndim) + "D");
     }
 
-    const int h = static_cast<int>(info.shape[0]);
-    const int w = static_cast<int>(info.shape[1]);
-    const int c = (info.ndim == 3) ? static_cast<int>(info.shape[2]) : 1;
+    constexpr py::ssize_t kMaxDim = std::numeric_limits<int>::max();
+    const py::ssize_t raw_h = info.shape[0];
+    const py::ssize_t raw_w = info.shape[1];
+    const py::ssize_t raw_c = (info.ndim == 3) ? info.shape[2] : 1;
 
-    if (c != 1 && c != 3) {
-        throw py::value_error(name + " must have 1 or 3 channels, got " + std::to_string(c));
+    if (raw_h <= 0 || raw_w <= 0 || raw_h > kMaxDim || raw_w > kMaxDim) {
+        throw py::value_error(name + " dimensions must be strictly positive and fit within INT_MAX (" +
+                              std::to_string(raw_w) + "x" + std::to_string(raw_h) + ")");
     }
 
-    if (h <= 0 || w <= 0) {
-        throw py::value_error(name + " dimensions must be strictly positive (" + std::to_string(w) + "x" + std::to_string(h) + ")");
+    if (raw_c != 1 && raw_c != 3) {
+        throw py::value_error(name + " must have 1 or 3 channels, got " + std::to_string(raw_c));
     }
+
+    if (raw_w > kMaxDim / raw_c || raw_h > kMaxDim / raw_w) {
+        throw py::value_error(name + " image size causes integer overflow");
+    }
+
+    const int h = static_cast<int>(raw_h);
+    const int w = static_cast<int>(raw_w);
+    const int c = static_cast<int>(raw_c);
 
     const auto* ptr = static_cast<const uint8_t*>(info.ptr);
+    if (!ptr) {
+        throw py::value_error(name + " buffer pointer is null");
+    }
     InputBufferHolder holder;
 
     const py::ssize_t row_stride = info.strides[0];
     const py::ssize_t col_stride = info.strides[1];
     const py::ssize_t ch_stride = (info.ndim == 3) ? info.strides[2] : 1;
+
+    if (row_stride > kMaxDim || row_stride < -kMaxDim) {
+        throw py::value_error(name + " row stride exceeds INT_MAX range");
+    }
+
 
     bool zero_copy_candidate = false;
     if (c == 1) {
