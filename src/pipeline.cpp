@@ -155,43 +155,100 @@ void wta_right_from_packed_volume(const PipelineConfig& cfg, const PackedCostVol
 
 } // namespace
 
+Status validate_config(const PipelineConfig& cfg) {
+    if (cfg.max_disparity <= cfg.min_disparity) {
+        return Status(StatusCode::InvalidDisparityRange, "max_disparity must be strictly greater than min_disparity");
+    }
+    if (cfg.cost.cost_max < 0 || cfg.cost.cost_max > 65535) {
+        return Status(StatusCode::InvalidConfig, "cost_max out of valid uint16 representation range [0, 65535]");
+    }
+    if (cfg.sgm.P1 < 0) {
+        return Status(StatusCode::InvalidConfig, "SGM P1 penalty must be non-negative");
+    }
+    if (cfg.sgm.P2_base <= cfg.sgm.P1) {
+        return Status(StatusCode::InvalidConfig, "SGM P2_base must be strictly greater than P1");
+    }
+    if (cfg.sgm.grad_t1 < 0 || cfg.sgm.grad_t2 < cfg.sgm.grad_t1) {
+        return Status(StatusCode::InvalidConfig, "SGM gradient thresholds must satisfy 0 <= grad_t1 <= grad_t2");
+    }
+    if (cfg.prior.enable && cfg.prior.search_radius < 0) {
+        return Status(StatusCode::InvalidConfig, "prior search_radius must be non-negative");
+    }
+    if (cfg.refine.enable && cfg.refine.iterations < 0) {
+        return Status(StatusCode::InvalidConfig, "refine iterations must be non-negative");
+    }
+    return Status::Ok();
+}
+
+Status validate_inputs(const Image8& left, const Image8& right) {
+    if (left.empty() || right.empty()) {
+        return Status(StatusCode::EmptyInput, "empty input image(left or right)");
+    }
+    if (left.width() <= 0 || left.height() <= 0) {
+        return Status(StatusCode::EmptyInput, "image dimensions must be positive non-zero");
+    }
+    if (left.width() != right.width() || left.height() != right.height()) {
+        return Status(StatusCode::SizeMismatch, "left/right size mismatch (images must be rectified and aligned)");
+    }
+    if (left.channels() != right.channels()) {
+        return Status(StatusCode::SizeMismatch, "left/right channel count mismatch");
+    }
+    return Status::Ok();
+}
+
 StereoMatcher::StereoMatcher(PipelineConfig cfg) : cfg_(std::move(cfg)) {}
 
-bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResult& result,
-                            PipelineStats* stats) const {
+Status StereoMatcher::compute_status(const Image8& left, const Image8& right, StereoResult& result,
+                                    PipelineStats* stats) const {
     PipelineBuffers scratch;
-    if (!compute_impl(left, right, scratch, stats)) {
+    Status s = compute_impl(left, right, scratch, stats);
+    if (!s.ok()) {
         result.clear();
-        return false;
+        return s;
     }
     result.disparity = std::move(scratch.disparity);
     result.confidence = std::move(scratch.confidence);
     result.invalid_reason = std::move(scratch.invalid_reason);
     result.reliable_mask = std::move(scratch.reliable_mask);
+    return Status::Ok();
+}
+
+bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResult& result,
+                            PipelineStats* stats) const {
+    Status s = compute_status(left, right, result, stats);
+    if (!s.ok()) {
+        last_error_ = s.message;
+        return false;
+    }
     return true;
 }
 
 bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuffers& out,
                             PipelineStats* stats) const {
-    return compute_impl(left, right, out, stats);
+    Status s = compute_impl(left, right, out, stats);
+    if (!s.ok()) {
+        last_error_ = s.message;
+        return false;
+    }
+    return true;
 }
 
-bool StereoMatcher::compute_impl(const Image8& left, const Image8& right, PipelineBuffers& out,
-                                 PipelineStats* stats) const {
+Status StereoMatcher::compute_impl(const Image8& left, const Image8& right, PipelineBuffers& out,
+                                   PipelineStats* stats) const {
     last_error_.clear();
-    if (left.empty() || right.empty()) {
-        last_error_ = "empty input";
-        return false;
-    }
-    if (left.width() != right.width() || left.height() != right.height()) {
-        last_error_ = "left/right size mismatch (images must be rectified and aligned)";
-        return false;
-    }
-    if (cfg_.max_disparity <= cfg_.min_disparity) {
-        last_error_ = "invalid disparity range";
-        return false;
+    Status s_in = validate_inputs(left, right);
+    if (!s_in.ok()) {
+        last_error_ = s_in.message;
+        return s_in;
     }
 
+    Status s_cfg = validate_config(cfg_);
+    if (!s_cfg.ok()) {
+        last_error_ = s_cfg.message;
+        return s_cfg;
+    }
+
+    try {
 #if defined(_OPENMP)
     if (cfg_.num_threads > 0) omp_set_num_threads(cfg_.num_threads);
 #endif
@@ -402,7 +459,14 @@ bool StereoMatcher::compute_impl(const Image8& left, const Image8& right, Pipeli
         }
     }
 
-    return true;
+    return Status::Ok();
+    } catch (const std::bad_alloc& e) {
+        last_error_ = std::string("memory allocation failure: ") + e.what();
+        return Status(StatusCode::AllocationFailure, last_error_);
+    } catch (const std::exception& e) {
+        last_error_ = std::string("internal pipeline error: ") + e.what();
+        return Status(StatusCode::InternalError, last_error_);
+    }
 }
 
 } // namespace apg
