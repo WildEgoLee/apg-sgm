@@ -60,7 +60,7 @@ uint64_t CostComputer::census9x7(const Image8& gray, int x, int y) {
     return bits;
 }
 
-void CostComputer::build_gray_and_grad(const Image8& src, Image8& gray, Image8& gx, Image8& gy) const {
+void CostComputer::build_gray_and_grad(const ImageView8& src, Image8& gray, Image8& gx, Image8& gy) const {
     gray = Image8(src.width(), src.height(), 1);
     gx = Image8(src.width(), src.height(), 1);
     gy = Image8(src.width(), src.height(), 1);
@@ -121,14 +121,19 @@ void CostComputer::build_census(const Image8& gray, CensusType type,
     }
 }
 
-void CostComputer::compute_aux(const Image8& left, const Image8& right, const PipelineConfig& cfg,
+void CostComputer::compute_aux(const ImageView8& left, const ImageView8& right, const PipelineConfig& cfg,
                                PipelineBuffers& buf) const {
-    buf.left = left;
-    buf.right = right;
     build_gray_and_grad(left, buf.left_gray, buf.left_gx, buf.left_gy);
     build_gray_and_grad(right, buf.right_gray, buf.right_gx, buf.right_gy);
     build_census(buf.left_gray, cfg.cost.census, buf.census_left, buf.census_left64);
     build_census(buf.right_gray, cfg.cost.census, buf.census_right, buf.census_right64);
+}
+
+void CostComputer::compute_aux(const Image8& left, const Image8& right, const PipelineConfig& cfg,
+                               PipelineBuffers& buf) const {
+    buf.left = left;
+    buf.right = right;
+    compute_aux(ImageView8(left), ImageView8(right), cfg, buf);
 }
 
 void CostComputer::compute_volume(const PipelineConfig& cfg, PipelineBuffers& buf) const {

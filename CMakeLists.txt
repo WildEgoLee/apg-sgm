@@ -82,3 +82,7 @@ add_test(NAME workspace COMMAND test_workspace)
 add_executable(test_session tests/test_session.cpp)
 target_link_libraries(test_session PRIVATE apg_sgm)
 add_test(NAME session COMMAND test_session)
+
+add_executable(test_image_view tests/test_image_view.cpp)
+target_link_libraries(test_image_view PRIVATE apg_sgm)
+add_test(NAME image_view COMMAND test_image_view)

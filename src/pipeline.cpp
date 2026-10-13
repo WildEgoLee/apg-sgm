@@ -180,7 +180,7 @@ Status validate_config(const PipelineConfig& cfg) {
     return Status::Ok();
 }
 
-Status validate_inputs(const Image8& left, const Image8& right) {
+Status validate_inputs(const ImageView8& left, const ImageView8& right) {
     if (left.empty() || right.empty()) {
         return Status(StatusCode::EmptyInput, "empty input image(left or right)");
     }
@@ -193,12 +193,15 @@ Status validate_inputs(const Image8& left, const Image8& right) {
     if (left.channels() != right.channels()) {
         return Status(StatusCode::SizeMismatch, "left/right channel count mismatch");
     }
+    if (left.stride() < left.width() * left.channels() || right.stride() < right.width() * right.channels()) {
+        return Status(StatusCode::SizeMismatch, "invalid row stride (stride less than row byte length)");
+    }
     return Status::Ok();
 }
 
 StereoMatcher::StereoMatcher(PipelineConfig cfg) : cfg_(std::move(cfg)) {}
 
-Status StereoMatcher::compute_status(const Image8& left, const Image8& right, StereoResult& result,
+Status StereoMatcher::compute_status(const ImageView8& left, const ImageView8& right, StereoResult& result,
                                     StereoWorkspace& workspace, PipelineStats* stats) const {
     if (workspace.options().max_retained_bytes > 0 &&
         workspace.allocated_bytes() > workspace.options().max_retained_bytes) {
@@ -235,13 +238,13 @@ Status StereoMatcher::compute_status(const Image8& left, const Image8& right, St
     return Status::Ok();
 }
 
-Status StereoMatcher::compute_status(const Image8& left, const Image8& right, StereoResult& result,
+Status StereoMatcher::compute_status(const ImageView8& left, const ImageView8& right, StereoResult& result,
                                     PipelineStats* stats) const {
     StereoWorkspace default_workspace;
     return compute_status(left, right, result, default_workspace, stats);
 }
 
-bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResult& result,
+bool StereoMatcher::compute(const ImageView8& left, const ImageView8& right, StereoResult& result,
                             StereoWorkspace& workspace, PipelineStats* stats) const {
     Status s = compute_status(left, right, result, workspace, stats);
     if (!s.ok()) {
@@ -251,7 +254,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResul
     return true;
 }
 
-bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResult& result,
+bool StereoMatcher::compute(const ImageView8& left, const ImageView8& right, StereoResult& result,
                             PipelineStats* stats) const {
     Status s = compute_status(left, right, result, stats);
     if (!s.ok()) {
@@ -263,7 +266,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResul
 
 bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuffers& out,
                             PipelineStats* stats) const {
-    Status s = compute_impl(left, right, out, stats);
+    Status s = compute_impl(ImageView8(left), ImageView8(right), out, stats);
     if (!s.ok()) {
         last_error_ = s.message;
         return false;
@@ -271,7 +274,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
     return true;
 }
 
-Status StereoMatcher::compute_impl(const Image8& left, const Image8& right, PipelineBuffers& out,
+Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& right, PipelineBuffers& out,
                                    PipelineStats* stats) const {
     last_error_.clear();
     Status s_in = validate_inputs(left, right);
