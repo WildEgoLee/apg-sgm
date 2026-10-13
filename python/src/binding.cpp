@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -35,7 +36,8 @@ struct InputBufferHolder {
 InputBufferHolder make_image_view(const py::buffer& buf, const std::string& name) {
     py::buffer_info info = buf.request();
 
-    if (info.itemsize != 1) {
+    if (info.itemsize != sizeof(uint8_t) ||
+        info.format != py::format_descriptor<uint8_t>::format()) {
         throw py::type_error(name + " must have dtype uint8 (got format '" + info.format + "')");
     }
 
@@ -171,6 +173,8 @@ public:
         }
 
         apg::ExecutionOptions opt;
+        opt.memory_policy = apg::MemoryPolicy::ReleasePerFrame; // Default matches P4 C++ engine semantics
+
         if (!memory_policy_arg.is_none()) {
             if (py::isinstance<py::str>(memory_policy_arg)) {
                 std::string p = memory_policy_arg.cast<std::string>();
@@ -216,9 +220,12 @@ public:
         apg::PipelineStats stats;
         apg::Status s;
 
-        // Release GIL during compute execution for true multithreading in Python
+        // Concurrency semantics: calls on the same StereoSession instance are serialized via mutex_,
+        // while calls across independent StereoSession instances execute concurrently with GIL released.
+        // Lock ordering: release GIL first, acquire mutex_ second; mutex_ is released before re-acquiring GIL.
         {
             py::gil_scoped_release release;
+            std::lock_guard<std::mutex> lock(mutex_);
             s = session_->process_status(left_holder.view, right_holder.view, res, &stats);
         }
 
@@ -231,16 +238,34 @@ public:
     }
 
     void reset() {
+        py::gil_scoped_release release;
+        std::lock_guard<std::mutex> lock(mutex_);
         session_->reset();
     }
 
-    size_t frame_count() const { return session_->frame_count(); }
-    double total_time_ms() const { return session_->total_time_ms(); }
-    double average_time_ms() const { return session_->average_time_ms(); }
-    size_t allocated_bytes() const { return session_->allocated_bytes(); }
-    std::string last_error() const { return session_->last_error(); }
+    size_t frame_count() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->frame_count();
+    }
+    double total_time_ms() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->total_time_ms();
+    }
+    double average_time_ms() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->average_time_ms();
+    }
+    size_t allocated_bytes() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->allocated_bytes();
+    }
+    std::string last_error() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->last_error();
+    }
 
-    std::string repr() const {
+    std::string repr() {
+        std::lock_guard<std::mutex> lock(mutex_);
         std::ostringstream oss;
         oss << "<apg_sgm.StereoSession frames=" << session_->frame_count()
             << " avg_time_ms=" << session_->average_time_ms()
@@ -250,6 +275,7 @@ public:
 
 private:
     std::unique_ptr<apg::StereoSession> session_;
+    std::mutex mutex_;
 };
 
 } // namespace
@@ -420,14 +446,14 @@ PYBIND11_MODULE(_core, m) {
         .def("__repr__", &PyStereoResult::repr);
 
     // StereoSession Class
-    py::class_<PyStereoSession>(m, "StereoSession", "Stateful streaming stereo matcher session with retained workspace")
+    py::class_<PyStereoSession>(m, "StereoSession", "Stateful streaming stereo matcher session")
         .def(py::init<py::object, int, int, int, py::object, py::object, size_t>(),
              py::arg("mode") = "balanced",
              py::arg("threads") = 0,
              py::arg("max_disparity") = 128,
              py::arg("min_disparity") = 0,
              py::arg("backend") = "auto",
-             py::arg("memory_policy") = "bounded_reuse",
+             py::arg("memory_policy") = "release_per_frame",
              py::arg("max_retained_bytes") = 0,
              "Initialize StereoSession with algorithm mode, disparity bounds, and execution options.")
         .def("process", &PyStereoSession::process, py::arg("left"), py::arg("right"),

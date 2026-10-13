@@ -15,6 +15,7 @@ endif()
 option(APG_SGM_BUILD_APPS "Build CLI applications" ON)
 option(APG_SGM_BUILD_TESTS "Build test suite" ON)
 option(APG_SGM_BUILD_BENCHMARKS "Build benchmark executables" ON)
+option(APG_SGM_BUILD_PYTHON "Build Python bindings" OFF)
 
 add_library(apg_sgm
     src/image.cpp
@@ -57,6 +58,34 @@ if(MSVC)
 else()
     target_compile_options(apg_sgm PRIVATE -Wall -Wextra -Wpedantic)
     set_source_files_properties(src/sgm_optimizer_avx2.cpp src/cost_aggregator_avx2.cpp src/cost_computer_avx2.cpp src/refiner_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2")
+endif()
+
+if(APG_SGM_BUILD_PYTHON)
+    find_package(pybind11 CONFIG QUIET)
+    if(NOT pybind11_FOUND)
+        find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -c "import pybind11; print(pybind11.get_cmake_dir())"
+            OUTPUT_VARIABLE _pybind11_dir
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _pybind11_res
+        )
+        if(_pybind11_res EQUAL 0)
+            find_package(pybind11 CONFIG REQUIRED PATHS "${_pybind11_dir}")
+        else()
+            message(FATAL_ERROR "pybind11 could not be located via Python3")
+        endif()
+    endif()
+
+    pybind11_add_module(_core python/src/binding.cpp)
+    target_link_libraries(_core PRIVATE apg_sgm)
+    set_target_properties(_core PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/apg_sgm"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/apg_sgm"
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/python/apg_sgm"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/python/apg_sgm"
+    )
+    install(TARGETS _core DESTINATION apg_sgm)
 endif()
 
 if(APG_SGM_BUILD_APPS)
