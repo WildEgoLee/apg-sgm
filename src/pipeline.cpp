@@ -199,18 +199,56 @@ Status validate_inputs(const Image8& left, const Image8& right) {
 StereoMatcher::StereoMatcher(PipelineConfig cfg) : cfg_(std::move(cfg)) {}
 
 Status StereoMatcher::compute_status(const Image8& left, const Image8& right, StereoResult& result,
-                                    PipelineStats* stats) const {
-    PipelineBuffers scratch;
-    Status s = compute_impl(left, right, scratch, stats);
+                                    StereoWorkspace& workspace, PipelineStats* stats) const {
+    if (workspace.options().max_retained_bytes > 0 &&
+        workspace.allocated_bytes() > workspace.options().max_retained_bytes) {
+        workspace.release();
+        result.clear();
+        return Status(StatusCode::ResourceLimitExceeded, "workspace memory budget exceeded before compute");
+    }
+
+    Status s = compute_impl(left, right, workspace.buffers(), stats);
     if (!s.ok()) {
         result.clear();
+        if (workspace.options().memory_policy == MemoryPolicy::ReleasePerFrame) {
+            workspace.release();
+        }
         return s;
     }
-    result.disparity = std::move(scratch.disparity);
-    result.confidence = std::move(scratch.confidence);
-    result.invalid_reason = std::move(scratch.invalid_reason);
-    result.reliable_mask = std::move(scratch.reliable_mask);
+
+    result.disparity = std::move(workspace.buffers().disparity);
+    result.confidence = std::move(workspace.buffers().confidence);
+    result.invalid_reason = std::move(workspace.buffers().invalid_reason);
+    result.reliable_mask = std::move(workspace.buffers().reliable_mask);
+
+    if (workspace.options().memory_policy == MemoryPolicy::ReleasePerFrame) {
+        workspace.release();
+    } else if (workspace.options().memory_policy == MemoryPolicy::BoundedReuse) {
+        if (workspace.options().max_retained_bytes > 0 &&
+            workspace.allocated_bytes() > workspace.options().max_retained_bytes) {
+            workspace.release();
+            result.clear();
+            return Status(StatusCode::ResourceLimitExceeded, "workspace memory budget exceeded after compute");
+        }
+    }
+
     return Status::Ok();
+}
+
+Status StereoMatcher::compute_status(const Image8& left, const Image8& right, StereoResult& result,
+                                    PipelineStats* stats) const {
+    StereoWorkspace default_workspace;
+    return compute_status(left, right, result, default_workspace, stats);
+}
+
+bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResult& result,
+                            StereoWorkspace& workspace, PipelineStats* stats) const {
+    Status s = compute_status(left, right, result, workspace, stats);
+    if (!s.ok()) {
+        last_error_ = s.message;
+        return false;
+    }
+    return true;
 }
 
 bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResult& result,

@@ -9,6 +9,8 @@
 #include "apg_sgm/pipeline.hpp"
 #include "apg_sgm/result.hpp"
 #include "apg_sgm/status.hpp"
+#include "apg_sgm/execution.hpp"
+#include "apg_sgm/workspace.hpp"
 #include "apg_sgm/ablation.hpp"
 
 #include <iostream>
