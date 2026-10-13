@@ -33,6 +33,17 @@ public:
     uint8_t gray(int x, int y) const;
     void fill(uint8_t v);
 
+    void release() {
+        data_.clear();
+        data_.shrink_to_fit();
+        w_ = 0;
+        h_ = 0;
+        c_ = 1;
+    }
+    size_t bytes() const {
+        return data_.capacity() * sizeof(uint8_t);
+    }
+
 private:
     int w_ = 0;
     int h_ = 0;
@@ -60,6 +71,16 @@ public:
 
     void fill(float v);
 
+    void release() {
+        data_.clear();
+        data_.shrink_to_fit();
+        w_ = 0;
+        h_ = 0;
+    }
+    size_t bytes() const {
+        return data_.capacity() * sizeof(float);
+    }
+
 private:
     int w_ = 0;
     int h_ = 0;
@@ -80,6 +101,16 @@ public:
     int16_t at(int x, int y) const { return data_[y * w_ + x]; }
     void fill(int16_t v);
 
+    void release() {
+        data_.clear();
+        data_.shrink_to_fit();
+        w_ = 0;
+        h_ = 0;
+    }
+    size_t bytes() const {
+        return data_.capacity() * sizeof(int16_t);
+    }
+
 private:
     int w_ = 0;
     int h_ = 0;
@@ -99,6 +130,16 @@ public:
     uint8_t& at(int x, int y) { return data_[y * w_ + x]; }
     uint8_t at(int x, int y) const { return data_[y * w_ + x]; }
     void fill(uint8_t v);
+
+    void release() {
+        data_.clear();
+        data_.shrink_to_fit();
+        w_ = 0;
+        h_ = 0;
+    }
+    size_t bytes() const {
+        return data_.capacity() * sizeof(uint8_t);
+    }
 
 private:
     int w_ = 0;

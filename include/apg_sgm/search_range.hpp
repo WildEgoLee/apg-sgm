@@ -33,6 +33,17 @@ struct SearchRange {
         dmin.at(x, y) = static_cast<int16_t>(lo);
         dmax.at(x, y) = static_cast<int16_t>(hi);
     }
+
+    void release() {
+        dmin.release();
+        dmax.release();
+        global_min = 0;
+        global_max = 0;
+    }
+
+    size_t bytes() const {
+        return dmin.bytes() + dmax.bytes();
+    }
 };
 
 } // namespace apg

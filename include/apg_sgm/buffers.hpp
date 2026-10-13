@@ -97,6 +97,65 @@ struct PipelineBuffers {
     Image32f confidence;
     Image8u1 invalid_reason;
     Image8u1 reliable_mask;
+
+    void release() {
+        left.release();
+        right.release();
+        left_gray.release();
+        right_gray.release();
+        left_gx.release();
+        left_gy.release();
+        right_gx.release();
+        right_gy.release();
+
+        census_left.clear(); census_left.shrink_to_fit();
+        census_right.clear(); census_right.shrink_to_fit();
+        census_left64.clear(); census_left64.shrink_to_fit();
+        census_right64.clear(); census_right64.shrink_to_fit();
+
+        range.release();
+        supports.clear(); supports.shrink_to_fit();
+        support_count = 0;
+        d_prior.release();
+        prior_confidence.release();
+        prior_spread.release();
+        d_prior_min.release();
+        d_prior_max.release();
+        cost.release();
+        cost32.release();
+        cost_right.release();
+        packed_cost.release();
+        packed_sgm16.release();
+        packed_cost32.release();
+        disparity.release();
+        d_before_refine.release();
+        d_after_refine.release();
+        disparity_right.release();
+        confidence.release();
+        invalid_reason.release();
+        reliable_mask.release();
+    }
+
+    size_t allocated_bytes() const {
+        size_t total = 0;
+        total += left.bytes() + right.bytes();
+        total += left_gray.bytes() + right_gray.bytes();
+        total += left_gx.bytes() + left_gy.bytes() + right_gx.bytes() + right_gy.bytes();
+        total += census_left.capacity() * sizeof(uint32_t);
+        total += census_right.capacity() * sizeof(uint32_t);
+        total += census_left64.capacity() * sizeof(uint64_t);
+        total += census_right64.capacity() * sizeof(uint64_t);
+        total += range.bytes();
+        total += supports.capacity() * sizeof(SupportMatch);
+        total += d_prior.bytes() + prior_confidence.bytes() + prior_spread.bytes();
+        total += d_prior_min.bytes() + d_prior_max.bytes();
+        total += cost.bytes() + cost32.bytes() + cost_right.bytes();
+        total += packed_cost.bytes() + packed_sgm16.bytes() + packed_cost32.bytes();
+        total += disparity.bytes() + d_before_refine.bytes() + d_after_refine.bytes();
+        total += disparity_right.bytes() + confidence.bytes();
+        total += invalid_reason.bytes() + reliable_mask.bytes();
+        return total;
+    }
 };
 
 } // namespace apg
