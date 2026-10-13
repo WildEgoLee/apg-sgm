@@ -78,3 +78,7 @@ add_test(NAME status COMMAND test_status)
 add_executable(test_workspace tests/test_workspace.cpp)
 target_link_libraries(test_workspace PRIVATE apg_sgm)
 add_test(NAME workspace COMMAND test_workspace)
+
+add_executable(test_session tests/test_session.cpp)
+target_link_libraries(test_session PRIVATE apg_sgm)
+add_test(NAME session COMMAND test_session)
