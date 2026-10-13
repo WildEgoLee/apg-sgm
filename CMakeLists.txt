@@ -66,3 +66,7 @@ add_test(NAME ablation COMMAND test_ablation)
 add_executable(test_headers tests/test_headers.cpp)
 target_link_libraries(test_headers PRIVATE apg_sgm)
 add_test(NAME headers COMMAND test_headers)
+
+add_executable(test_api_contract tests/test_api_contract.cpp)
+target_link_libraries(test_api_contract PRIVATE apg_sgm)
+add_test(NAME api_contract COMMAND test_api_contract)
