@@ -157,8 +157,27 @@ void wta_right_from_packed_volume(const PipelineConfig& cfg, const PackedCostVol
 
 StereoMatcher::StereoMatcher(PipelineConfig cfg) : cfg_(std::move(cfg)) {}
 
+bool StereoMatcher::compute(const Image8& left, const Image8& right, StereoResult& result,
+                            PipelineStats* stats) const {
+    PipelineBuffers scratch;
+    if (!compute_impl(left, right, scratch, stats)) {
+        result.clear();
+        return false;
+    }
+    result.disparity = std::move(scratch.disparity);
+    result.confidence = std::move(scratch.confidence);
+    result.invalid_reason = std::move(scratch.invalid_reason);
+    result.reliable_mask = std::move(scratch.reliable_mask);
+    return true;
+}
+
 bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuffers& out,
                             PipelineStats* stats) const {
+    return compute_impl(left, right, out, stats);
+}
+
+bool StereoMatcher::compute_impl(const Image8& left, const Image8& right, PipelineBuffers& out,
+                                 PipelineStats* stats) const {
     last_error_.clear();
     if (left.empty() || right.empty()) {
         last_error_ = "empty input";

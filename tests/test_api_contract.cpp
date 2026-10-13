@@ -97,6 +97,29 @@ static bool run_and_check(const std::string& name,
         return false;
     }
 
+    StereoResult result;
+    if (!matcher.compute(left, right, result)) {
+        std::cerr << "StereoResult compute failed for " << name << ": " << matcher.last_error() << std::endl;
+        return false;
+    }
+
+    // Verify 100% exact parity between StereoResult and PipelineBuffers
+    if (result.width() != buf.disparity.width() || result.height() != buf.disparity.height()) {
+        std::cerr << "Parity failure: result dimensions mismatch with buffer\n";
+        return false;
+    }
+
+    const size_t total_pix = static_cast<size_t>(result.width()) * result.height();
+    for (size_t i = 0; i < total_pix; ++i) {
+        if (result.disparity.data()[i] != buf.disparity.data()[i] ||
+            result.confidence.data()[i] != buf.confidence.data()[i] ||
+            result.invalid_reason.data()[i] != buf.invalid_reason.data()[i] ||
+            result.reliable_mask.data()[i] != buf.reliable_mask.data()[i]) {
+            std::cerr << "Parity failure: pixel " << i << " mismatch between StereoResult and PipelineBuffers\n";
+            return false;
+        }
+    }
+
     fp.tag = name;
     fp.w = buf.disparity.width();
     fp.h = buf.disparity.height();
