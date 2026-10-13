@@ -69,7 +69,7 @@ public:
     PackedCostVolume() = default;
 
     PackedCostVolume(const PackedCostVolume& other)
-        : layout_(other.layout_), size_(other.data_ ? other.size_ : 0) {
+        : layout_(other.layout_), size_(other.data_ ? other.size_ : 0), capacity_(other.data_ ? other.size_ : 0) {
         if (size_ > 0) {
             data_.reset(new T[size_]);
             std::copy_n(other.data_.get(), size_, data_.get());
@@ -79,14 +79,15 @@ public:
     PackedCostVolume& operator=(const PackedCostVolume& other) {
         if (this != &other) {
             const size_t new_size = other.data_ ? other.size_ : 0;
-            std::unique_ptr<T[]> new_data;
+            if (new_size > capacity_) {
+                data_.reset(new_size > 0 ? new T[new_size] : nullptr);
+                capacity_ = new_size;
+            }
             if (new_size > 0) {
-                new_data.reset(new T[new_size]);
-                std::copy_n(other.data_.get(), new_size, new_data.get());
+                std::copy_n(other.data_.get(), new_size, data_.get());
             }
             layout_ = other.layout_;
             size_ = new_size;
-            data_ = std::move(new_data);
         }
         return *this;
     }
@@ -94,16 +95,20 @@ public:
     PackedCostVolume(PackedCostVolume&& other) noexcept
         : layout_(std::move(other.layout_)),
           size_(other.size_),
+          capacity_(other.capacity_),
           data_(std::move(other.data_)) {
         other.size_ = 0;
+        other.capacity_ = 0;
     }
 
     PackedCostVolume& operator=(PackedCostVolume&& other) noexcept {
         if (this != &other) {
             layout_ = std::move(other.layout_);
             size_ = other.size_;
+            capacity_ = other.capacity_;
             data_ = std::move(other.data_);
             other.size_ = 0;
+            other.capacity_ = 0;
         }
         return *this;
     }
@@ -118,13 +123,12 @@ public:
 
     void allocate_for_overwrite(std::shared_ptr<const PackedVolumeLayout> layout) {
         const size_t new_size = layout ? layout->state_count() : 0;
-        std::unique_ptr<T[]> new_data;
-        if (new_size > 0) {
-            new_data.reset(new T[new_size]);
+        if (new_size > capacity_) {
+            data_.reset(new_size > 0 ? new T[new_size] : nullptr);
+            capacity_ = new_size;
         }
         layout_ = std::move(layout);
         size_ = new_size;
-        data_ = std::move(new_data);
     }
 
     void allocate_for_overwrite(const SearchRange& range) {
@@ -151,8 +155,12 @@ public:
     void release() {
         data_.reset();
         size_ = 0;
+        capacity_ = 0;
         layout_.reset();
     }
+
+    size_t capacity() const { return capacity_; }
+    size_t capacity_bytes() const { return capacity_ * sizeof(T); }
 
     std::shared_ptr<const PackedVolumeLayout> layout() const { return layout_; }
 
@@ -211,6 +219,7 @@ public:
 private:
     std::shared_ptr<const PackedVolumeLayout> layout_;
     size_t size_ = 0;
+    size_t capacity_ = 0;
     std::unique_ptr<T[]> data_;
 };
 

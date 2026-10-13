@@ -122,11 +122,30 @@ static void test_c_api_metadata() {
     std::cout << "[PASS] test_c_api_metadata\n";
 }
 
+static void test_c_api_create_ex() {
+    apg_session_options_t opts;
+    std::memset(&opts, 0, sizeof(opts));
+    opts.quality_mode = APG_QUALITY_BALANCED;
+    opts.memory_policy = APG_MEMORY_BOUNDED_REUSE;
+    opts.max_retained_bytes = 50 * 1024 * 1024;
+    opts.num_threads = 4;
+    opts.backend = 2; // Packed
+    opts.min_disparity = 0;
+    opts.max_disparity = 64;
+
+    apg_session_t session = apg_session_create_ex(&opts);
+    assert(session != nullptr);
+
+    apg_session_destroy(session);
+    std::cout << "[PASS] test_c_api_create_ex\n";
+}
+
 int main() {
     test_c_api_lifecycle();
     test_c_api_execution_and_parity();
     test_c_api_error_handling();
     test_c_api_metadata();
+    test_c_api_create_ex();
     std::cout << "All C API tests passed successfully!\n";
     return 0;
 }

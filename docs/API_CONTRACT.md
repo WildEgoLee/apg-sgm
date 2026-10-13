@@ -46,7 +46,10 @@
    - Valid disparity estimates across `Auto`, `Dense`, and `Packed` backends must agree within subpixel parity tolerances ($< 10^{-4}$ disparity difference on valid pixels, exact on invalid pixels).
 3. **Memory Safety & Retention**:
    - Under `MemoryPolicy::ReleasePerFrame` (default), memory retained in `StereoWorkspace` after frame processing must be exactly 0 bytes.
-   - Under `MemoryPolicy::BoundedReuse`, memory retained between frames with identical dimensions must not trigger reallocation, and must never exceed `max_retained_bytes`.
+   - Under `MemoryPolicy::BoundedReuse`, memory retained between frames with identical dimensions must not trigger reallocation for major workspace buffers, and must never exceed `max_retained_bytes`.
+   - Pre-compute budget gating: `estimate_workspace_bytes()` evaluates memory demand prior to allocation and rejects over-budget requests with `StatusCode::ResourceLimitExceeded`.
+4. **Execution Options & Threading**:
+   - `ExecutionOptions::num_threads` takes precedence over `PipelineConfig::num_threads`. When set to 0, it falls back to config or OpenMP defaults.
 
 ---
 
@@ -58,3 +61,5 @@
 2. **C ABI**:
    - Exported under `include/apg_sgm/c_api.h` with symbol export macro `APG_API`.
    - ABI stability guaranteed across minor releases through opaque handle design (`apg_session_t`, `apg_result_t`).
+   - Extended options structure `apg_session_options_t` and constructor `apg_session_create_ex` provide full C control over memory policy, budget, threads, backend, and disparity range.
+   - Verified pure C99 compatibility via `c_api_smoke.c`.

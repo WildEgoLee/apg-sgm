@@ -19,6 +19,8 @@ inline Status validate_inputs(const StereoInputView& input) {
     return validate_inputs(input.left, input.right);
 }
 
+size_t estimate_workspace_bytes(int width, int height, const PipelineConfig& cfg);
+
 class StereoMatcher {
 public:
     explicit StereoMatcher(PipelineConfig cfg = PipelineConfig::from_mode(QualityMode::Balanced));
@@ -90,7 +92,7 @@ public:
 
 private:
     Status compute_impl(const ImageView8& left, const ImageView8& right, PipelineBuffers& out,
-                        PipelineStats* stats) const;
+                        PipelineStats* stats, int num_threads = 0) const;
 
     PipelineConfig cfg_;
     mutable std::string last_error_;

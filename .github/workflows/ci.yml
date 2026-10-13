@@ -16,9 +16,21 @@ jobs:
           - os: ubuntu-latest
             compiler: gcc
             cxx: g++
+            cc: gcc
           - os: ubuntu-latest
             compiler: clang
             cxx: clang++
+            cc: clang
+          - os: ubuntu-latest
+            compiler: clang-asan-ubsan
+            cxx: clang++
+            cc: clang
+            sanitize: asan-ubsan
+          - os: ubuntu-latest
+            compiler: gcc-shared
+            cxx: g++
+            cc: gcc
+            shared: on
           - os: windows-latest
             compiler: msvc
             cxx: cl
@@ -36,9 +48,18 @@ jobs:
       - name: Configure CMake (Linux)
         if: runner.os == 'Linux'
         run: |
+          EXTRA_FLAGS=""
+          if [ "${{ matrix.sanitize }}" == "asan-ubsan" ]; then
+            EXTRA_FLAGS="-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -DCMAKE_C_FLAGS=-fsanitize=address,undefined"
+          fi
+          if [ "${{ matrix.shared }}" == "on" ]; then
+            EXTRA_FLAGS="$EXTRA_FLAGS -DBUILD_SHARED_LIBS=ON"
+          fi
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            $EXTRA_FLAGS
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
@@ -53,7 +74,18 @@ jobs:
         run: |
           ctest --test-dir build -C Release --output-on-failure
 
+      - name: Verify find_package consumer project
+        if: runner.os == 'Linux' && matrix.sanitize != 'asan-ubsan'
+        run: |
+          cmake --install build --prefix install_test
+          cmake -S tests/test_cmake_package -B build_pkg_test \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DCMAKE_PREFIX_PATH=$PWD/install_test
+          cmake --build build_pkg_test
+
       - name: Run Benchmark Smoke Test
+        if: matrix.sanitize != 'asan-ubsan'
         shell: bash
         run: |
           python3 tools/prepare_dataset.py --synthetic || python tools/prepare_dataset.py --synthetic

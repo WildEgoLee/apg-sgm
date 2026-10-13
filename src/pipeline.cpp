@@ -199,18 +199,71 @@ Status validate_inputs(const ImageView8& left, const ImageView8& right) {
     return Status::Ok();
 }
 
+size_t estimate_workspace_bytes(int width, int height, const PipelineConfig& cfg) {
+    if (width <= 0 || height <= 0) return 0;
+    const uint64_t w = static_cast<uint64_t>(width);
+    const uint64_t h = static_cast<uint64_t>(height);
+    const uint64_t npixels = w * h;
+    const int d_range = cfg.max_disparity - cfg.min_disparity;
+    const uint64_t D = d_range > 0 ? static_cast<uint64_t>(d_range) : 128ULL;
+    const uint64_t total_voxels = npixels * D;
+
+    uint64_t est = 0;
+    // Grayscale + gradients (left_gray, right_gray, gx, gy)
+    est += npixels * 6ULL;
+    // Census (32-bit or 64-bit for left + right)
+    const uint64_t census_bytes = (cfg.cost.census == CensusType::Census9x7) ? 8ULL : 4ULL;
+    est += npixels * census_bytes * 2ULL;
+    // Range
+    est += npixels * static_cast<uint64_t>(sizeof(int16_t)) * 2ULL;
+
+    const bool use_packed = cfg.resolves_to_packed();
+    if (use_packed) {
+        est += npixels * static_cast<uint64_t>(sizeof(uint32_t)) + npixels * static_cast<uint64_t>(sizeof(int16_t));
+        est += total_voxels * static_cast<uint64_t>(sizeof(uint16_t));
+        const int npath = (cfg.sgm.paths == PathType::Path8) ? 8 : 4;
+        const bool use_u16 = can_use_u16_sgm_accumulator(cfg, npath);
+        est += total_voxels * static_cast<uint64_t>(use_u16 ? sizeof(uint16_t) : sizeof(uint32_t));
+        if (cfg.aggregation.enable) {
+            est += total_voxels * static_cast<uint64_t>(sizeof(uint16_t));
+        }
+    } else {
+        est += total_voxels * static_cast<uint64_t>(sizeof(uint16_t));
+        est += total_voxels * static_cast<uint64_t>(sizeof(uint32_t));
+        if (cfg.aggregation.enable) {
+            est += total_voxels * static_cast<uint64_t>(sizeof(uint16_t));
+        }
+    }
+
+    est += npixels * static_cast<uint64_t>(sizeof(float)) * 5ULL;
+    est += npixels * 2ULL;
+
+    if (est > static_cast<uint64_t>(SIZE_MAX)) {
+        return SIZE_MAX;
+    }
+    return static_cast<size_t>(est);
+}
+
 StereoMatcher::StereoMatcher(PipelineConfig cfg) : cfg_(std::move(cfg)) {}
 
 Status StereoMatcher::compute_status(const ImageView8& left, const ImageView8& right, StereoResult& result,
                                     StereoWorkspace& workspace, PipelineStats* stats) const {
-    if (workspace.options().max_retained_bytes > 0 &&
-        workspace.allocated_bytes() > workspace.options().max_retained_bytes) {
-        workspace.release();
-        result.clear();
-        return Status(StatusCode::ResourceLimitExceeded, "workspace memory budget exceeded before compute");
+    const int w = left.width();
+    const int h = left.height();
+    const int dmax = cfg_.max_disparity;
+
+    if (workspace.options().max_retained_bytes > 0) {
+        const size_t estimated = estimate_workspace_bytes(w, h, cfg_);
+        if (estimated > workspace.options().max_retained_bytes) {
+            result.clear();
+            return Status(StatusCode::ResourceLimitExceeded, "workspace memory budget exceeded before compute");
+        }
     }
 
-    Status s = compute_impl(left, right, workspace.buffers(), stats);
+    const bool was_reuse = workspace.can_reuse(w, h, dmax);
+    const int eff_threads = workspace.options().num_threads > 0 ? workspace.options().num_threads : cfg_.num_threads;
+
+    Status s = compute_impl(left, right, workspace.buffers(), stats, eff_threads);
     if (!s.ok()) {
         result.clear();
         if (workspace.options().memory_policy == MemoryPolicy::ReleasePerFrame) {
@@ -219,10 +272,12 @@ Status StereoMatcher::compute_status(const ImageView8& left, const ImageView8& r
         return s;
     }
 
-    result.disparity = std::move(workspace.buffers().disparity);
-    result.confidence = std::move(workspace.buffers().confidence);
-    result.invalid_reason = std::move(workspace.buffers().invalid_reason);
-    result.reliable_mask = std::move(workspace.buffers().reliable_mask);
+    result.disparity = workspace.buffers().disparity;
+    result.confidence = workspace.buffers().confidence;
+    result.invalid_reason = workspace.buffers().invalid_reason;
+    result.reliable_mask = workspace.buffers().reliable_mask;
+
+    workspace.record_frame(w, h, dmax, was_reuse);
 
     if (workspace.options().memory_policy == MemoryPolicy::ReleasePerFrame) {
         workspace.release();
@@ -238,6 +293,14 @@ Status StereoMatcher::compute_status(const ImageView8& left, const ImageView8& r
 
     if (stats) {
         stats->retained_workspace_bytes = workspace.allocated_bytes();
+        stats->allocation_count = workspace.allocation_count();
+        stats->reuse_count = workspace.reuse_count();
+        stats->requested_threads = workspace.options().num_threads > 0 ? workspace.options().num_threads : cfg_.num_threads;
+        stats->effective_threads = eff_threads;
+        stats->requested_backend = (cfg_.volume_backend == VolumeBackend::Packed) ? "Packed" :
+                                   (cfg_.volume_backend == VolumeBackend::Dense) ? "Dense" : "Auto";
+        stats->resolved_backend = cfg_.resolves_to_packed() ? "Packed" : "Dense";
+        stats->memory_policy = (workspace.options().memory_policy == MemoryPolicy::BoundedReuse) ? "BoundedReuse" : "ReleasePerFrame";
     }
 
     return Status::Ok();
@@ -271,7 +334,7 @@ bool StereoMatcher::compute(const ImageView8& left, const ImageView8& right, Ste
 
 bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuffers& out,
                             PipelineStats* stats) const {
-    Status s = compute_impl(ImageView8(left), ImageView8(right), out, stats);
+    Status s = compute_impl(ImageView8(left), ImageView8(right), out, stats, cfg_.num_threads);
     if (!s.ok()) {
         last_error_ = s.message;
         return false;
@@ -280,7 +343,7 @@ bool StereoMatcher::compute(const Image8& left, const Image8& right, PipelineBuf
 }
 
 Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& right, PipelineBuffers& out,
-                                   PipelineStats* stats) const {
+                                   PipelineStats* stats, int num_threads) const {
     last_error_.clear();
     Status s_in = validate_inputs(left, right);
     if (!s_in.ok()) {
@@ -296,7 +359,8 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
 
     try {
 #if defined(_OPENMP)
-    if (cfg_.num_threads > 0) omp_set_num_threads(cfg_.num_threads);
+    if (num_threads > 0) omp_set_num_threads(num_threads);
+    else if (cfg_.num_threads > 0) omp_set_num_threads(cfg_.num_threads);
 #endif
 
     CostComputer cost;
