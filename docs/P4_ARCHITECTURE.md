@@ -10,7 +10,7 @@ Key achievements across P4 milestones:
 1. **Public Output Contract (`StereoResult`)**: Cleanly decoupled product consumer deliverables (`disparity`, `confidence`, `invalid_reason`, `reliable_mask`) from internal scratch buffers (`PipelineBuffers`).
 2. **Explicit Memory Policy & Workspace (`StereoWorkspace`)**: Replaced hidden memory retention with explicit policies:
    - `MemoryPolicy::ReleasePerFrame`: Default production policy ensuring 0-byte retention after each frame.
-   - `MemoryPolicy::BoundedReuse`: Steady-state capacity reuse mode for streaming pipelines with explicit `max_retained_bytes` resource guarding. Verified zero workspace reallocations across identical-dimension frames via `frame_allocation_count` and `frame_reuse_count` (with `allocation_count` and `reuse_count` preserved as backward-compatible aliases). Buffer capacity tracking accurately accounts for committed capacities across large $\to$ small frame transitions.
+   - `MemoryPolicy::BoundedReuse`: Steady-state capacity reuse mode for streaming pipelines with explicit `max_retained_bytes` resource guarding. Major retained workspace capacities are reused across compatible frames; `frame_reuse_count` tracks frame-level reuse epochs, not individual heap-allocation events (with `allocation_count` and `reuse_count` preserved as backward-compatible aliases). Buffer capacity tracking accurately accounts for committed capacities across large $\to$ small frame transitions.
    - **Pre-compute Budget Gating**: `estimate_workspace_bytes()` uses checked 64-bit arithmetic against integer multiplication overflow and accounts for all 6 grayscale/gradient images, census descriptors, search range bounds, packed layout, cost volumes, 10 persistent `Image32f` buffers, 2 temporary WTA `Image32f` buffers (`best`, `second`), and post-processing masks. It aborts immediately with `StatusCode::ResourceLimitExceeded` if budget is exceeded before allocating.
 3. **Structured Status & Validation (`Status`, `StatusCode`)**: Introduced granular error reporting (`EmptyInput`, `SizeMismatch`, `InvalidDisparityRange`, `InvalidConfig`, `UnsupportedBackend`, `ResourceLimitExceeded`, `AllocationFailure`, `InternalError`) without relying on exceptions or ambiguous boolean flags.
 4. **Execution Policy & Threading Control**: Disentangled algorithm hyperparameters (`PipelineConfig`) from execution options (`ExecutionOptions`). `ExecutionOptions::num_threads` dynamically governs OpenMP thread dispatch.
@@ -18,9 +18,9 @@ Key achievements across P4 milestones:
 6. **Raw-Memory Strided Interoperability (`ImageView8`, `StereoInputView`)**: Zero-copy input view accepting arbitrary row strides and memory layouts from camera SDKs and foreign runtimes.
 7. **Observability, Diagnostics & Accounting (`PipelineStats`)**: Enhanced telemetry capturing per-stage timings, `peak_workspace_bytes`, `retained_workspace_bytes`, `valid_disparity_ratio`, execution parameters (`requested_threads`, `effective_threads`, `requested_backend`, `resolved_backend`, `memory_policy`), and resource instrumentation (`frame_allocation_count`, `frame_reuse_count`), with structured formatting via `to_string()` and `to_json()`. CLI `apg-stereo` exposes `--stats` and `--stats-json`.
 8. **Production Packaging & CMake Distribution**: Standard modern CMake packaging with configurable build flags (`APG_SGM_BUILD_APPS`, `APG_SGM_BUILD_TESTS`, `APG_SGM_BUILD_BENCHMARKS`), `GNUInstallDirs`, generator expressions, target exports, `apg_sgmConfig.cmake`, `apg_sgmConfigVersion.cmake` for `find_package(apg_sgm CONFIG)`. Verified by independent external consumer project (`tests/test_cmake_package`).
-9. **Pure C ABI Boundary (`include/apg_sgm/c_api.h`)**: Stable C ABI interface with opaque handles (`apg_session_t`, `apg_result_t`), struct layout freezing and version validation via `uint32_t struct_size` in `apg_session_options_t`, extended initialization (`apg_session_create_ex`), and strided image descriptors (`apg_image_view_t`). Verified by pure C99 compilation in `tests/c_api_smoke.c`.
+9. **Pure C ABI Boundary (`include/apg_sgm/c_api.h`)**: Stable C ABI interface with opaque handles (`apg_session_t`, `apg_result_t`), struct layout freezing and version validation via `uint32_t struct_size` in `apg_session_options_t` (callers pass `sizeof(apg_session_options_t)`; `0` is accepted as a legacy initialization convention for callers built against the current layout, noting it does not provide binary compatibility with pre-struct_size layouts), extended initialization (`apg_session_create_ex`), and strided image descriptors (`apg_image_view_t`). Verified by pure C99 compilation in `tests/c_api_smoke.c`.
 10. **Release Hardening & Sanitizers**: Fault injection tests (huge bounds, invalid disparity ranges, invalid row strides, budget failure, fault recovery across frames, capacity retention, overflow checks). Multi-platform CI matrix covering Linux GCC, Linux Clang, Linux Clang ASan/UBSan, Linux GCC Shared Library, and Windows MSVC.
-11. **Algorithmic Invariant & Performance Gate**: 100% bit-exact output parity with P3 across all operational modes, verified across all 15 Middlebury scenes with +11.84% geomean speedup and 0.00% regression over baseline `f906b4d`.
+11. **Algorithmic Invariant & Canonical Performance Gate**: 100% bit-exact raw floating-point parity with P3 across all operational modes, verified across all 15 Middlebury scenes in canonical F-mode (Prior + Refiner + 4SGM) with +7.96% geomean speedup ($P4/P3 = 0.9263 \le 1.02$) and 0.00% regression over baseline `f906b4d`.
 
 ---
 
@@ -122,7 +122,7 @@ Defined in `include/apg_sgm/execution.hpp` and `include/apg_sgm/workspace.hpp`:
   - Prevents memory bloat across heterogeneous image streams.
 - `MemoryPolicy::BoundedReuse`:
   - Retains cost volumes and intermediate buffers between consecutive frames with matching dimensions.
-  - Achieves zero frame reallocation steady-state performance for fixed-resolution video streaming, verified via `frame_allocation_count` and `frame_reuse_count`.
+  - Major retained workspace capacities are reused across compatible frames; `frame_reuse_count` tracks frame-level reuse epochs, not individual heap-allocation events.
   - Buffer capacity tracking (`allocated_bytes()`) reflects actual committed buffer capacities, preventing under-reporting during large-to-small frame transitions.
   - Respects `max_retained_bytes`. If estimated or retained memory exceeds the threshold, `Status(StatusCode::ResourceLimitExceeded)` is returned.
 - **Pre-compute Budget Check**:
@@ -157,7 +157,7 @@ Defined in `include/apg_sgm/pipeline_stats.hpp`:
 Defined in `include/apg_sgm/c_api.h` and `src/c_api.cpp`:
 - Exported functions using `APG_API` macro (`__declspec(dllexport)` / `__attribute__((visibility("default")))`).
 - Opaque handles `apg_session_t` and `apg_result_t`.
-- Explicit struct layout validation and version freezing via `uint32_t struct_size` header in `apg_session_options_t`. Callers pass `sizeof(apg_session_options_t)` or `0`; layout mismatches are rejected by `apg_session_create_ex` with `nullptr`.
+- Explicit struct layout validation and version freezing via `uint32_t struct_size` header in `apg_session_options_t`. Callers pass `sizeof(apg_session_options_t)`. `0` is accepted as a legacy initialization convention for callers built against the current struct layout; it does not provide binary compatibility with pre-struct_size layouts. Layout mismatches are rejected by `apg_session_create_ex` with `nullptr`.
 - Extended initialization `apg_session_create_ex(const apg_session_options_t*)`.
 - C-compatible strided input struct `apg_image_view_t`.
 - Zero-copy result pointer accessors (`apg_result_get_disparity`, `apg_result_get_confidence`, etc.).
@@ -204,31 +204,31 @@ target_link_libraries(my_app PRIVATE apg_sgm::apg_sgm)
 
 ## 6. Canonical Performance Regression Gate & P4 Closure
 
-To guarantee that the introduction of `StereoSession`, `StereoWorkspace`, strided `ImageView8`, `PipelineStats`, and C ABI layers introduced zero performance regression against the P3 final optimization baseline (`f906b4d`), a paired canonical benchmark was executed across all 15 Middlebury 2014 scenes in the identical execution environment (MSVC x64 Release, 16 threads, warmup=2, repeat=5):
+To guarantee that the introduction of `StereoSession`, `StereoWorkspace`, strided `ImageView8`, `PipelineStats`, and C ABI layers introduced zero performance regression against the P3 final optimization baseline (`f906b4d`), a paired canonical benchmark was executed across all 15 Middlebury 2014 scenes in canonical production **F mode** (`Prior + Refiner + 4SGM`) in the identical execution environment (MSVC x64 Release, 16 threads, warmup=2, repeat=5):
 
-| Middlebury 2014 Scene | Baseline `f906b4d` (ms) | P4 Final Candidate (ms) | Delta (ms) | Speedup / Regression | Bit-Exact Parity |
-| :-------------------- | ----------------------: | ----------------------: | ---------: | -------------------: | :--------------: |
-| **Adirondack**        |                   73.01 |                   70.03 |      +2.98 |               +4.26% |       PASS       |
-| **ArtL**              |                   21.47 |                   19.07 |      +2.40 |              +12.59% |       PASS       |
-| **Jadeplant**         |                   97.63 |                   88.22 |      +9.41 |              +10.67% |       PASS       |
-| **Motorcycle**        |                   79.41 |                   67.88 |     +11.53 |              +16.99% |       PASS       |
-| **MotorcycleE**       |                   77.22 |                   70.46 |      +6.76 |               +9.59% |       PASS       |
-| **Piano**             |                   68.48 |                   61.79 |      +6.69 |              +10.83% |       PASS       |
-| **PianoL**            |                   79.52 |                   69.12 |     +10.40 |              +15.05% |       PASS       |
-| **Pipes**             |                   77.52 |                   67.54 |      +9.98 |              +14.78% |       PASS       |
-| **Playroom**          |                   76.01 |                   66.55 |      +9.46 |              +14.21% |       PASS       |
-| **Playtable**         |                   72.17 |                   66.46 |      +5.71 |               +8.59% |       PASS       |
-| **PlaytableP**        |                   69.73 |                   64.38 |      +5.35 |               +8.31% |       PASS       |
-| **Recycle**           |                   76.12 |                   68.38 |      +7.74 |              +11.32% |       PASS       |
-| **Shelves**           |                   74.66 |                   66.12 |      +8.54 |              +12.92% |       PASS       |
-| **Teddy**             |                   34.32 |                   30.05 |      +4.27 |              +14.21% |       PASS       |
-| **Vintage**           |                   99.53 |                   87.35 |     +12.18 |              +13.94% |       PASS       |
-| **TOTAL / GEOMEAN**   |             **1076.80** |              **963.40** |   **+113.40**| **1.1184x (+11.84%)** | **100% BIT-EXACT**|
+| Middlebury 2014 Scene | Baseline `f906b4d` (ms) | P4 Final Candidate (ms) | Delta (ms) | Speedup (%) | Ratio ($P4/P3$) | Raw Float FNV-1a (64-bit) | Bit-Exact Parity |
+| :-------------------- | ----------------------: | ----------------------: | ---------: | ----------: | --------------: | :-----------------------: | :--------------: |
+| **Adirondack**        |                  112.89 |                  109.93 |      +2.96 |      +2.69% |          0.9738 |   `0x4bf310d083d2a3e8`    |  100% BIT-EXACT  |
+| **ArtL**              |                   30.72 |                   28.79 |      +1.93 |      +6.70% |          0.9372 |   `0xb16c3b15c58b742b`    |  100% BIT-EXACT  |
+| **Jadeplant**         |                  150.66 |                  147.23 |      +3.43 |      +2.33% |          0.9772 |   `0x3fb3bca67979ab10`    |  100% BIT-EXACT  |
+| **Motorcycle**        |                  113.03 |                  102.52 |     +10.51 |     +10.25% |          0.9070 |   `0xb35a74694ab56e47`    |  100% BIT-EXACT  |
+| **MotorcycleE**       |                  115.68 |                  106.22 |      +9.46 |      +8.91% |          0.9182 |   `0x71c841d3c22f5a3d`    |  100% BIT-EXACT  |
+| **Piano**             |                   98.02 |                   92.68 |      +5.34 |      +5.76% |          0.9455 |   `0x3200f5f4c8942b98`    |  100% BIT-EXACT  |
+| **PianoL**            |                  113.19 |                  109.29 |      +3.90 |      +3.57% |          0.9655 |   `0xdf6cf3e1d6d3aa49`    |  100% BIT-EXACT  |
+| **Pipes**             |                   98.60 |                   93.16 |      +5.44 |      +5.84% |          0.9448 |   `0x1983b2be001f6ece`    |  100% BIT-EXACT  |
+| **Playroom**          |                  102.96 |                  98.10 |      +4.86 |      +4.95% |          0.9528 |   `0xdbffb47fb1e7b7c9`    |  100% BIT-EXACT  |
+| **Playtable**         |                   99.80 |                   92.97 |      +6.83 |      +7.35% |          0.9316 |   `0xc24126c5073151d3`    |  100% BIT-EXACT  |
+| **PlaytableP**        |                   91.77 |                   88.04 |      +3.73 |      +4.24% |          0.9594 |   `0xe593212b18ec9bd7`    |  100% BIT-EXACT  |
+| **Recycle**           |                  254.26 |                  233.06 |     +21.20 |      +9.10% |          0.9166 |   `0xb1fdfc20744ecffb`    |  100% BIT-EXACT  |
+| **Shelves**           |                  259.89 |                  240.56 |     +19.33 |      +8.04% |          0.9256 |   `0x9f140b58e044bb3e`    |  100% BIT-EXACT  |
+| **Teddy**             |                  128.65 |                   98.49 |     +30.16 |     +30.62% |          0.7656 |   `0x4ad951f3f3a063ad`    |  100% BIT-EXACT  |
+| **Vintage**           |                  370.45 |                  331.56 |     +38.89 |     +11.73% |          0.8950 |   `0xdc638a635cf8eb90`    |  100% BIT-EXACT  |
+| **TOTAL / GEOMEAN**   |             **2140.57** |             **1972.60** |   **+167.97**| **+7.96% (1.0796×)** | **0.9263 (≤ 1.02)** | **MATCHED (15/15)** | **100% BIT-EXACT** |
 
 ### Final Technical Evaluation
-1. **Runtime Performance**: Total pipeline latency improved from **1076.80 ms to 963.40 ms** (**+11.77% speedup**, **1.1184x geomean**). Zero regression across all 15 benchmark scenes (exceeding the strict $\le 2\%$ regression budget).
-2. **Numerical & Parity Accuracy**: 100% bit-exact parity across all 15 scenes (EPE, Bad2.0, and D1-all identical).
-3. **Memory Safety & Accounting**: Capacity-based workspace retained-memory accounting guarantees accurate reporting on dynamic stream size changes; pre-compute checked bounds prevent overflow; default production mode maintains strict 0-byte retention.
+1. **Canonical Runtime Performance**: Under full canonical F-mode, total pipeline latency improved from **2140.57 ms to 1972.60 ms** (**+8.52% overall, +7.96% geomean**). Across all 15 benchmark scenes, the runtime ratio satisfies $P4 / P3 \le 0.9772 \ll 1.02$, with zero performance regression on any scene.
+2. **True Numerical & Raw-Disparity Invariance**: Every output disparity map was exported as raw IEEE-754 32-bit float PFM payload and hashed with FNV-1a 64-bit and SHA-256. All 15 scenes demonstrated 100% byte-for-byte exact parity between baseline `f906b4d` and P4 final candidate. Furthermore, synthetic contract fingerprints in `test_api_contract.cpp` are explicitly asserted against frozen golden constants.
+3. **Memory Safety & Accounting Integrity**: Capacity-based workspace retained-memory accounting guarantees accurate reporting on dynamic stream size changes; pre-compute checked bounds prevent integer overflow; default production mode maintains strict 0-byte retention.
 4. **C ABI Stability**: Frozen `apg_session_options_t` layout with `struct_size` version guarding and pure C99 compatibility.
 
-**Conclusion: P4 ARCHITECTURE COMPLETE.**
+**Conclusion: P4 ARCHITECTURE COMPLETE — without qualification.**

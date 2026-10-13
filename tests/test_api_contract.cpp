@@ -239,6 +239,60 @@ int main() {
         fingerprints.push_back(fp);
     }
 
+    // Frozen Golden Contract Fingerprints table
+    static const GoldenContractFingerprint kGoldenFingerprints[] = {
+        {"Odd_Checkerboard_Fast_Dense", 33, 27, 0, 612, 0x1710451f7eab215ULL, 0xe61822cc0fbe3a38ULL, 0x22081e533cd30004ULL, 0x9ade9d63e4fcae7bULL},
+        {"Color_Noise_Fast_Dense", 32, 24, 0, 720, 0x7e8e0fa784351325ULL, 0x5860e8f479cbe0fdULL, 0x82f55cc1fd68a695ULL, 0x9db48cb5d76242b5ULL},
+        {"Odd_Checkerboard_Fast_Packed", 33, 27, 0, 612, 0x1710451f7eab215ULL, 0xe61822cc0fbe3a38ULL, 0x22081e533cd30004ULL, 0x9ade9d63e4fcae7bULL},
+        {"Color_Noise_Fast_Packed", 32, 24, 0, 720, 0x7e8e0fa784351325ULL, 0x5860e8f479cbe0fdULL, 0x82f55cc1fd68a695ULL, 0x9db48cb5d76242b5ULL},
+        {"Odd_Checkerboard_Balanced_Dense", 33, 27, 0, 612, 0x1710451f7eab215ULL, 0xe61822cc0fbe3a38ULL, 0x22081e533cd30004ULL, 0x9ade9d63e4fcae7bULL},
+        {"Color_Noise_Balanced_Dense", 32, 24, 0, 720, 0x7e8e0fa784351325ULL, 0x5860e8f479cbe0fdULL, 0x82f55cc1fd68a695ULL, 0x9db48cb5d76242b5ULL},
+        {"Odd_Checkerboard_Balanced_Packed", 33, 27, 0, 612, 0x1710451f7eab215ULL, 0xe61822cc0fbe3a38ULL, 0x22081e533cd30004ULL, 0x9ade9d63e4fcae7bULL},
+        {"Color_Noise_Balanced_Packed", 32, 24, 0, 720, 0x7e8e0fa784351325ULL, 0x5860e8f479cbe0fdULL, 0x82f55cc1fd68a695ULL, 0x9db48cb5d76242b5ULL},
+        {"Odd_Checkerboard_HighQuality_Dense", 33, 27, 0, 612, 0x1710451f7eab215ULL, 0xe61822cc0fbe3a38ULL, 0x22081e533cd30004ULL, 0x9ade9d63e4fcae7bULL},
+        {"Color_Noise_HighQuality_Dense", 32, 24, 0, 720, 0x7e8e0fa784351325ULL, 0x5860e8f479cbe0fdULL, 0x82f55cc1fd68a695ULL, 0x9db48cb5d76242b5ULL},
+        {"Odd_Checkerboard_HighQuality_Packed", 33, 27, 0, 612, 0x1710451f7eab215ULL, 0xe61822cc0fbe3a38ULL, 0x22081e533cd30004ULL, 0x9ade9d63e4fcae7bULL},
+        {"Color_Noise_HighQuality_Packed", 32, 24, 0, 720, 0x7e8e0fa784351325ULL, 0x5860e8f479cbe0fdULL, 0x82f55cc1fd68a695ULL, 0x9db48cb5d76242b5ULL},
+        {"Negative_Disp_Range", 48, 36, 0, 178, 0x1d8e1d22713fcee9ULL, 0x77f3c5cdbc782a05ULL, 0x8ec5011cb7fb425ULL, 0x3563e2187fb4a965ULL}
+    };
+
+    const size_t expected_count = sizeof(kGoldenFingerprints) / sizeof(kGoldenFingerprints[0]);
+    if (fingerprints.size() != expected_count) {
+        std::cerr << "Fingerprint count mismatch: got " << fingerprints.size()
+                  << ", expected " << expected_count << std::endl;
+        return 1;
+    }
+
+    for (size_t i = 0; i < expected_count; ++i) {
+        const auto& actual = fingerprints[i];
+        const auto& expected = kGoldenFingerprints[i];
+
+        if (actual.tag != expected.tag ||
+            actual.w != expected.w ||
+            actual.h != expected.h ||
+            actual.invalid_count != expected.invalid_count ||
+            actual.reliable_count != expected.reliable_count ||
+            actual.disp_hash != expected.disp_hash ||
+            actual.conf_hash != expected.conf_hash ||
+            actual.invalid_hash != expected.invalid_hash ||
+            actual.reliable_hash != expected.reliable_hash) {
+            std::cerr << "FINGERPRINT INVARIANCE FAILURE on case [" << actual.tag << "]:\n"
+                      << "  Actual:   w=" << actual.w << ", h=" << actual.h
+                      << ", inv=" << actual.invalid_count << ", rel=" << actual.reliable_count
+                      << ", disp=0x" << std::hex << actual.disp_hash
+                      << ", conf=0x" << actual.conf_hash
+                      << ", inv_hash=0x" << actual.invalid_hash
+                      << ", rel_hash=0x" << actual.reliable_hash << std::dec << "\n"
+                      << "  Expected: w=" << expected.w << ", h=" << expected.h
+                      << ", inv=" << expected.invalid_count << ", rel=" << expected.reliable_count
+                      << ", disp=0x" << std::hex << expected.disp_hash
+                      << ", conf=0x" << expected.conf_hash
+                      << ", inv_hash=0x" << expected.invalid_hash
+                      << ", rel_hash=0x" << expected.reliable_hash << std::dec << "\n";
+            return 1;
+        }
+    }
+
     // Print summary table of frozen contract fingerprints
     std::cout << "\n--------------------------------------------------------------------------" << std::endl;
     std::cout << "                 P4.0 CONTRACT FINGERPRINTS SUMMARY                       " << std::endl;
@@ -263,6 +317,6 @@ int main() {
                   << std::setw(20) << hash_ss.str() << "\n";
     }
 
-    std::cout << "\nAll " << fingerprints.size() << " P4.0 API & Behavioral contract cases verified successfully!\n";
+    std::cout << "\nAll " << fingerprints.size() << " P4.0 API & Behavioral contract cases verified bit-exact against golden constants!\n";
     return 0;
 }
