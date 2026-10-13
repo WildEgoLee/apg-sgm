@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "pybind11>=2.10.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apg_sgm"
+version = "1.0.0"
+description = "APG-SGM Stereo Engine Python bindings"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy>=1.20",
+]
+authors = [
+    { name = "APG-SGM Authors" }
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+testpaths = ["python/tests"]

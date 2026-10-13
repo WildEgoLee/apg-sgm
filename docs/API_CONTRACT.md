@@ -65,3 +65,23 @@
    - Extended options structure `apg_session_options_t` includes `uint32_t struct_size` at the head for explicit struct layout versioning and validation. Callers pass `sizeof(apg_session_options_t)`. `0` is accepted as a legacy initialization convention for callers built against the current struct layout; it does not provide binary compatibility with pre-struct_size layouts. Layout mismatches are rejected by `apg_session_create_ex` with `nullptr`. Struct layout is frozen for 1.x.
    - Extended initialization `apg_session_create_ex` provides full C control over memory policy, budget, threads, backend, and disparity range.
    - Verified pure C99 compatibility via `c_api_smoke.c`.
+
+---
+
+## 5. Python API Contract (`apg_sgm`)
+
+1. **Header Boundary**:
+   - The binding layer (`python/src/binding.cpp`) only includes public headers under `include/apg_sgm/`.
+   - Zero inclusion of internal headers (`#include "src/..."`) is strictly enforced.
+2. **Buffer Protocol & Zero-Copy Semantics**:
+   - Accepts contiguous or row-strided (pitch-padded) NumPy `uint8` arrays of shape `(H, W)` or `(H, W, 3)`.
+   - Standard C-order and row-padded strided arrays are mapped directly to `apg::ImageView8` without copy.
+   - Non-standard/transposed views safely fall back to an internal contiguous buffer copy.
+3. **Memory Ownership & Lifetime Guarantees**:
+   - Output views (`disparity`, `confidence`, `reliable_mask`, `invalid_reason`) return NumPy arrays whose `base` pointer references the parent `StereoResult` instance.
+   - Memory remains guaranteed valid even if the local `StereoResult` reference leaves scope.
+4. **Concurrency & Performance**:
+   - GIL is explicitly released during compute execution (`py::gil_scoped_release`), enabling true parallel processing across Python threads.
+   - Wrapper glue overhead is benchmarked at $< 1\%$ (typically $< 0.1\%$) of pipeline compute time.
+5. **Streaming & Stability**:
+   - Supports `MemoryPolicy::BoundedReuse` (major retained workspace capacity reuse) across sequential frames, ensuring zero memory growth during steady-state video processing.
