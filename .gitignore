@@ -13,3 +13,8 @@ benchmarks/data/
 results/*.csv
 !results/.gitkeep
 .DS_Store
+*.pyd
+*.pyc
+__pycache__/
+*.egg-info/
+.pytest_cache/

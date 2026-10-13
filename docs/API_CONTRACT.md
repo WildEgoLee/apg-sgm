@@ -65,3 +65,23 @@
    - Extended options structure `apg_session_options_t` includes `uint32_t struct_size` at the head for explicit struct layout versioning and validation. Callers pass `sizeof(apg_session_options_t)`. `0` is accepted as a legacy initialization convention for callers built against the current struct layout; it does not provide binary compatibility with pre-struct_size layouts. Layout mismatches are rejected by `apg_session_create_ex` with `nullptr`. Struct layout is frozen for 1.x.
    - Extended initialization `apg_session_create_ex` provides full C control over memory policy, budget, threads, backend, and disparity range.
    - Verified pure C99 compatibility via `c_api_smoke.c`.
+
+---
+
+## 5. Python API Contract (`apg_sgm`)
+
+1. **Header Boundary**:
+   - The binding layer (`python/src/binding.cpp`) only includes public headers under `include/apg_sgm/`.
+   - Zero inclusion of internal headers (`#include "src/..."`) is strictly enforced.
+2. **Buffer Protocol & Strict Type Checking**:
+   - Accepts contiguous or row-strided (pitch-padded) NumPy `uint8` arrays of shape `(H, W)` or `(H, W, 3)`.
+   - Enforces strict dtype verification (`itemsize == 1` and format `'B'`); non-uint8 dtypes (`int8`, `bool`, `uint16`, `float32`) are immediately rejected with `TypeError`.
+   - Standard C-order and row-padded strided arrays are mapped directly to `apg::ImageView8` without copy. Non-standard/transposed views safely fall back to an internal contiguous buffer copy.
+3. **Memory Ownership & Retention Defaults**:
+   - Output views (`disparity`, `confidence`, `reliable_mask`, `invalid_reason`) return NumPy arrays whose `base` pointer references the parent `StereoResult` instance, preventing dangling pointers upon local reference exit.
+   - Default memory policy is `MemoryPolicy::ReleasePerFrame`, preserving P4 baseline zero retained footprint (`allocated_bytes() == 0`). `BoundedReuse` is strictly opt-in, and setting non-zero `max_retained_bytes` is recommended in production streaming pipelines.
+4. **Concurrency & Thread Safety**:
+   - Within the same `StereoSession` instance, execution is serialized via internal mutex to prevent workspace data races.
+   - GIL is released during compute execution (`py::gil_scoped_release`), enabling parallel compute across independent `StereoSession` instances.
+5. **Build Model & CPU Dispatch Invariance**:
+   - Built via `scikit-build-core` linking the primary CMake `apg_sgm` target, avoiding global compiler AVX2 flags on generic translation units and preserving the runtime CPU dispatch architecture.
