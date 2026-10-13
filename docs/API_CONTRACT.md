@@ -46,8 +46,8 @@
    - Valid disparity estimates across `Auto`, `Dense`, and `Packed` backends must agree within subpixel parity tolerances ($< 10^{-4}$ disparity difference on valid pixels, exact on invalid pixels).
 3. **Memory Safety & Retention**:
    - Under `MemoryPolicy::ReleasePerFrame` (default), memory retained in `StereoWorkspace` after frame processing must be exactly 0 bytes.
-   - Under `MemoryPolicy::BoundedReuse`, memory retained between frames with identical dimensions must not trigger reallocation for major workspace buffers, and must never exceed `max_retained_bytes`.
-   - Pre-compute budget gating: `estimate_workspace_bytes()` evaluates memory demand prior to allocation and rejects over-budget requests with `StatusCode::ResourceLimitExceeded`.
+   - Under `MemoryPolicy::BoundedReuse`, memory retained between frames with identical dimensions does not reallocate workspace buffers (`frame_allocation_count == 1`, `frame_reuse_count == N - 1`). Workspace capacity tracking reflects actual committed buffer capacities (`allocated_bytes()`), ensuring that on large $\to$ small frame transitions, retained memory is never under-reported.
+   - Pre-compute budget gating: `estimate_workspace_bytes()` uses checked arithmetic against integer multiplication overflow, accounting for all 6 grayscale/gradient images, census descriptors, search range bounds, packed layout and cost volumes, 10 persistent `Image32f` buffers, 2 temporary WTA `Image32f` buffers (`best`, `second`), and post-processing masks. It evaluates memory demand prior to allocation and rejects over-budget requests with `StatusCode::ResourceLimitExceeded`.
 4. **Execution Options & Threading**:
    - `ExecutionOptions::num_threads` takes precedence over `PipelineConfig::num_threads`. When set to 0, it falls back to config or OpenMP defaults.
 
@@ -58,8 +58,10 @@
 1. **C++ API**:
    - Preferred modern API: `StereoSession::process_status(left_view, right_view, result)` and `StereoMatcher::compute_status(left, right, result, workspace)`.
    - Legacy API: `StereoMatcher::compute(left, right, disparity, confidence, buffers)` remains available for backward compatibility.
+   - Counters: `frame_allocation_count()` and `frame_reuse_count()` track frame-level allocation epochs, with `allocation_count()` and `reuse_count()` preserved as backward-compatible aliases.
 2. **C ABI**:
    - Exported under `include/apg_sgm/c_api.h` with symbol export macro `APG_API`.
    - ABI stability guaranteed across minor releases through opaque handle design (`apg_session_t`, `apg_result_t`).
-   - Extended options structure `apg_session_options_t` and constructor `apg_session_create_ex` provide full C control over memory policy, budget, threads, backend, and disparity range.
+   - Extended options structure `apg_session_options_t` includes `uint32_t struct_size` at the head for explicit struct layout versioning and validation. Callers pass `sizeof(apg_session_options_t)` or `0`; mismatches are rejected with `nullptr`. Struct layout is frozen for 1.x.
+   - Extended initialization `apg_session_create_ex` provides full C control over memory policy, budget, threads, backend, and disparity range.
    - Verified pure C99 compatibility via `c_api_smoke.c`.

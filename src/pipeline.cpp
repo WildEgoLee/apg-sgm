@@ -199,44 +199,100 @@ Status validate_inputs(const ImageView8& left, const ImageView8& right) {
     return Status::Ok();
 }
 
+static inline bool checked_add_u64(uint64_t& out, uint64_t a, uint64_t b) {
+    if (UINT64_MAX - a < b) return false;
+    out = a + b;
+    return true;
+}
+
+static inline bool checked_mul_u64(uint64_t& out, uint64_t a, uint64_t b) {
+    if (a != 0 && b > UINT64_MAX / a) return false;
+    out = a * b;
+    return true;
+}
+
+// Conservative workspace estimate for early budget rejection.
+// Accounts for all major pipeline allocations including:
+// - 6 grayscale and gradient images (left_gray, right_gray, left_gx, left_gy, right_gx, right_gy)
+// - Census descriptors (left and right, 32-bit or 64-bit)
+// - Pixel search range bounds (min_disp, max_disp)
+// - Matching & aggregation cost volumes (packed layout + slices, or dense volumes)
+// - 10 persistent float buffers (d_prior, prior_confidence, prior_spread, d_prior_min, d_prior_max,
+//   disparity, d_before_refine, d_after_refine, disparity_right, confidence)
+// - 2 temporary float buffers used during WTA/confidence estimation (best, second)
+// - 2 8-bit post-processing masks (invalid_reason, reliable_mask)
 size_t estimate_workspace_bytes(int width, int height, const PipelineConfig& cfg) {
     if (width <= 0 || height <= 0) return 0;
     const uint64_t w = static_cast<uint64_t>(width);
     const uint64_t h = static_cast<uint64_t>(height);
-    const uint64_t npixels = w * h;
+    uint64_t npixels = 0;
+    if (!checked_mul_u64(npixels, w, h)) return SIZE_MAX;
+
     const int d_range = cfg.max_disparity - cfg.min_disparity;
     const uint64_t D = d_range > 0 ? static_cast<uint64_t>(d_range) : 128ULL;
-    const uint64_t total_voxels = npixels * D;
+    uint64_t total_voxels = 0;
+    if (!checked_mul_u64(total_voxels, npixels, D)) return SIZE_MAX;
 
     uint64_t est = 0;
-    // Grayscale + gradients (left_gray, right_gray, gx, gy)
-    est += npixels * 6ULL;
+    auto add_term = [&](uint64_t term) -> bool {
+        return checked_add_u64(est, est, term);
+    };
+
+    // Grayscale + gradients (6 * 1 byte per pixel: left_gray, right_gray, left_gx, left_gy, right_gx, right_gy)
+    uint64_t gray_grad = 0;
+    if (!checked_mul_u64(gray_grad, npixels, 6ULL) || !add_term(gray_grad)) return SIZE_MAX;
+
     // Census (32-bit or 64-bit for left + right)
     const uint64_t census_bytes = (cfg.cost.census == CensusType::Census9x7) ? 8ULL : 4ULL;
-    est += npixels * census_bytes * 2ULL;
-    // Range
-    est += npixels * static_cast<uint64_t>(sizeof(int16_t)) * 2ULL;
+    uint64_t census_total = 0;
+    if (!checked_mul_u64(census_total, npixels, census_bytes * 2ULL) || !add_term(census_total)) return SIZE_MAX;
+
+    // SearchRange (min_disp + max_disp int16_t per pixel)
+    uint64_t range_bytes = 0;
+    if (!checked_mul_u64(range_bytes, npixels, static_cast<uint64_t>(sizeof(int16_t) * 2)) || !add_term(range_bytes)) return SIZE_MAX;
 
     const bool use_packed = cfg.resolves_to_packed();
     if (use_packed) {
-        est += npixels * static_cast<uint64_t>(sizeof(uint32_t)) + npixels * static_cast<uint64_t>(sizeof(int16_t));
-        est += total_voxels * static_cast<uint64_t>(sizeof(uint16_t));
+        // Packed layout: offsets (uint32_t) + dmin (int16_t)
+        uint64_t layout_bytes = 0;
+        if (!checked_mul_u64(layout_bytes, npixels, static_cast<uint64_t>(sizeof(uint32_t) + sizeof(int16_t))) || !add_term(layout_bytes)) return SIZE_MAX;
+
+        // packed_cost (uint16_t)
+        uint64_t cost_bytes = 0;
+        if (!checked_mul_u64(cost_bytes, total_voxels, static_cast<uint64_t>(sizeof(uint16_t))) || !add_term(cost_bytes)) return SIZE_MAX;
+
+        // packed SGM accumulator (uint16_t or uint32_t)
         const int npath = (cfg.sgm.paths == PathType::Path8) ? 8 : 4;
         const bool use_u16 = can_use_u16_sgm_accumulator(cfg, npath);
-        est += total_voxels * static_cast<uint64_t>(use_u16 ? sizeof(uint16_t) : sizeof(uint32_t));
+        uint64_t sgm_bytes = 0;
+        if (!checked_mul_u64(sgm_bytes, total_voxels, static_cast<uint64_t>(use_u16 ? sizeof(uint16_t) : sizeof(uint32_t))) || !add_term(sgm_bytes)) return SIZE_MAX;
+
         if (cfg.aggregation.enable) {
-            est += total_voxels * static_cast<uint64_t>(sizeof(uint16_t));
+            uint64_t agg_bytes = 0;
+            if (!checked_mul_u64(agg_bytes, total_voxels, static_cast<uint64_t>(sizeof(uint16_t))) || !add_term(agg_bytes)) return SIZE_MAX;
         }
     } else {
-        est += total_voxels * static_cast<uint64_t>(sizeof(uint16_t));
-        est += total_voxels * static_cast<uint64_t>(sizeof(uint32_t));
+        // Dense volumes: cost (uint16_t), SGM accumulator cost32 (uint32_t)
+        uint64_t cost_bytes = 0;
+        if (!checked_mul_u64(cost_bytes, total_voxels, static_cast<uint64_t>(sizeof(uint16_t))) || !add_term(cost_bytes)) return SIZE_MAX;
+        uint64_t cost32_bytes = 0;
+        if (!checked_mul_u64(cost32_bytes, total_voxels, static_cast<uint64_t>(sizeof(uint32_t))) || !add_term(cost32_bytes)) return SIZE_MAX;
         if (cfg.aggregation.enable) {
-            est += total_voxels * static_cast<uint64_t>(sizeof(uint16_t));
+            uint64_t agg_bytes = 0;
+            if (!checked_mul_u64(agg_bytes, total_voxels, static_cast<uint64_t>(sizeof(uint16_t))) || !add_term(agg_bytes)) return SIZE_MAX;
         }
     }
 
-    est += npixels * static_cast<uint64_t>(sizeof(float)) * 5ULL;
-    est += npixels * 2ULL;
+    // 10 persistent Image32f buffers (d_prior, prior_confidence, prior_spread, d_prior_min, d_prior_max,
+    // disparity, d_before_refine, d_after_refine, disparity_right, confidence)
+    // + 2 temporary Image32f buffers during WTA/confidence (best, second)
+    // Total: 12 * sizeof(float) per pixel
+    uint64_t float_buffers_bytes = 0;
+    if (!checked_mul_u64(float_buffers_bytes, npixels, static_cast<uint64_t>(12ULL * sizeof(float))) || !add_term(float_buffers_bytes)) return SIZE_MAX;
+
+    // 2 8-bit masks: invalid_reason, reliable_mask
+    uint64_t mask_bytes = 0;
+    if (!checked_mul_u64(mask_bytes, npixels, 2ULL) || !add_term(mask_bytes)) return SIZE_MAX;
 
     if (est > static_cast<uint64_t>(SIZE_MAX)) {
         return SIZE_MAX;
@@ -293,6 +349,8 @@ Status StereoMatcher::compute_status(const ImageView8& left, const ImageView8& r
 
     if (stats) {
         stats->retained_workspace_bytes = workspace.allocated_bytes();
+        stats->frame_allocation_count = workspace.frame_allocation_count();
+        stats->frame_reuse_count = workspace.frame_reuse_count();
         stats->allocation_count = workspace.allocation_count();
         stats->reuse_count = workspace.reuse_count();
         stats->requested_threads = workspace.options().num_threads > 0 ? workspace.options().num_threads : cfg_.num_threads;

@@ -125,6 +125,7 @@ static void test_c_api_metadata() {
 static void test_c_api_create_ex() {
     apg_session_options_t opts;
     std::memset(&opts, 0, sizeof(opts));
+    opts.struct_size = static_cast<uint32_t>(sizeof(opts));
     opts.quality_mode = APG_QUALITY_BALANCED;
     opts.memory_policy = APG_MEMORY_BOUNDED_REUSE;
     opts.max_retained_bytes = 50 * 1024 * 1024;
@@ -132,6 +133,11 @@ static void test_c_api_create_ex() {
     opts.backend = 2; // Packed
     opts.min_disparity = 0;
     opts.max_disparity = 64;
+
+    // Test rejection of struct size mismatch
+    opts.struct_size = 1234;
+    assert(apg_session_create_ex(&opts) == nullptr);
+    opts.struct_size = static_cast<uint32_t>(sizeof(opts));
 
     apg_session_t session = apg_session_create_ex(&opts);
     assert(session != nullptr);

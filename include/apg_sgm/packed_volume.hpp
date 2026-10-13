@@ -61,6 +61,9 @@ struct PackedVolumeLayout {
     size_t bytes() const {
         return offsets.size() * sizeof(uint32_t) + dmin.size() * sizeof(int16_t);
     }
+    size_t allocated_bytes() const {
+        return offsets.capacity() * sizeof(uint32_t) + dmin.capacity() * sizeof(int16_t);
+    }
 };
 
 template <typename T>
@@ -215,6 +218,9 @@ public:
     size_t data_bytes() const { return size_ * sizeof(T); }
     size_t layout_bytes() const { return layout_ ? layout_->bytes() : 0; }
     size_t bytes() const { return data_bytes() + layout_bytes(); }
+    size_t allocated_bytes() const {
+        return capacity_bytes() + (layout_ ? layout_->allocated_bytes() : 0);
+    }
 
 private:
     std::shared_ptr<const PackedVolumeLayout> layout_;

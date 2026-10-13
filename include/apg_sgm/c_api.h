@@ -61,6 +61,7 @@ typedef struct apg_result_s* apg_result_t;
 
 /* Session options */
 typedef struct {
+    uint32_t struct_size;      /* sizeof(apg_session_options_t) for ABI versioning/layout validation (0 or sizeof) */
     int quality_mode;          /* APG_QUALITY_FAST, BALANCED, HIGH_QUALITY */
     int memory_policy;         /* APG_MEMORY_RELEASE_PER_FRAME, BOUNDED_REUSE */
     size_t max_retained_bytes; /* 0 = unconstrained */

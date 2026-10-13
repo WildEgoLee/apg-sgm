@@ -29,8 +29,10 @@ struct PipelineStats {
     size_t estimated_peak_bytes = 0;
     size_t peak_workspace_bytes = 0;
     size_t retained_workspace_bytes = 0;
-    size_t allocation_count = 0;
-    size_t reuse_count = 0;
+    size_t frame_allocation_count = 0;
+    size_t frame_reuse_count = 0;
+    size_t allocation_count = 0; // alias
+    size_t reuse_count = 0;      // alias
 
     int requested_threads = 0;
     int effective_threads = 0;
@@ -79,8 +81,8 @@ struct PipelineStats {
         oss << "  Requested Backend:  " << requested_backend << "\n";
         oss << "  Resolved Backend:   " << resolved_backend << "\n";
         oss << "  Memory Policy:      " << memory_policy << "\n";
-        oss << "  Allocations:        " << allocation_count << "\n";
-        oss << "  Reuses:             " << reuse_count << "\n";
+        oss << "  Frame Allocations:  " << frame_allocation_count << "\n";
+        oss << "  Frame Reuses:       " << frame_reuse_count << "\n";
         oss << "Memory Accounting:\n";
         oss << "  Peak Workspace:     " << peak_workspace_bytes / (1024.0 * 1024.0) << " MB\n";
         oss << "  Retained Workspace: " << retained_workspace_bytes / (1024.0 * 1024.0) << " MB\n";
@@ -103,6 +105,8 @@ struct PipelineStats {
         oss << "    \"requested_backend\": \"" << requested_backend << "\",\n";
         oss << "    \"resolved_backend\": \"" << resolved_backend << "\",\n";
         oss << "    \"memory_policy\": \"" << memory_policy << "\",\n";
+        oss << "    \"frame_allocation_count\": " << frame_allocation_count << ",\n";
+        oss << "    \"frame_reuse_count\": " << frame_reuse_count << ",\n";
         oss << "    \"allocation_count\": " << allocation_count << ",\n";
         oss << "    \"reuse_count\": " << reuse_count << "\n";
         oss << "  },\n";
