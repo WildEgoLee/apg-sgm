@@ -4,8 +4,12 @@
 #include "apg_sgm/config.hpp"
 #include "apg_sgm/pipeline_stats.hpp"
 #include "apg_sgm/result.hpp"
+#include "apg_sgm/status.hpp"
 
 namespace apg {
+
+Status validate_config(const PipelineConfig& cfg);
+Status validate_inputs(const Image8& left, const Image8& right);
 
 class StereoMatcher {
 public:
@@ -14,7 +18,11 @@ public:
     void set_config(const PipelineConfig& cfg) { cfg_ = cfg; }
     const PipelineConfig& config() const { return cfg_; }
 
-    // Modern public API (isolates internal pipeline buffers)
+    // Modern structured Status API (isolates internal pipeline buffers)
+    Status compute_status(const Image8& left, const Image8& right, StereoResult& result,
+                          PipelineStats* stats = nullptr) const;
+
+    // Modern public API (bool return)
     bool compute(const Image8& left, const Image8& right, StereoResult& result,
                  PipelineStats* stats = nullptr) const;
 
@@ -25,8 +33,8 @@ public:
     const std::string& last_error() const { return last_error_; }
 
 private:
-    bool compute_impl(const Image8& left, const Image8& right, PipelineBuffers& out,
-                      PipelineStats* stats) const;
+    Status compute_impl(const Image8& left, const Image8& right, PipelineBuffers& out,
+                        PipelineStats* stats) const;
 
     PipelineConfig cfg_;
     mutable std::string last_error_;

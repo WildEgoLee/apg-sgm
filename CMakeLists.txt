@@ -70,3 +70,7 @@ add_test(NAME headers COMMAND test_headers)
 add_executable(test_api_contract tests/test_api_contract.cpp)
 target_link_libraries(test_api_contract PRIVATE apg_sgm)
 add_test(NAME api_contract COMMAND test_api_contract)
+
+add_executable(test_status tests/test_status.cpp)
+target_link_libraries(test_status PRIVATE apg_sgm)
+add_test(NAME status COMMAND test_status)
