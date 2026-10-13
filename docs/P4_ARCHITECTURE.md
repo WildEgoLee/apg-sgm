@@ -173,7 +173,7 @@ The P4 test suite guarantees full behavioral and functional compliance across 13
 2. `synthetic`: End-to-end synthetic stereo accuracy across modes.
 3. `ablation`: Micro-benchmarks across ablation settings.
 4. `headers`: Self-containment test for all public C and C++ headers.
-5. `api_contract`: FNV-1a fingerprint invariance asserting bit-exact P3 baseline parity.
+5. `api_contract`: FNV-1a frozen fingerprint invariance for the P4 behavioral contract.
 6. `status`: Comprehensive error handling and input validation coverage.
 7. `workspace`: Verification of `ReleasePerFrame`, `BoundedReuse`, and resource limits.
 8. `session`: Multi-frame streaming and telemetry validation.
@@ -204,7 +204,7 @@ target_link_libraries(my_app PRIVATE apg_sgm::apg_sgm)
 
 ## 6. Canonical Performance Regression Gate & P4 Closure
 
-To guarantee that the introduction of `StereoSession`, `StereoWorkspace`, strided `ImageView8`, `PipelineStats`, and C ABI layers introduced zero performance regression against the P3 final optimization baseline (`f906b4d`), a paired canonical benchmark was executed across all 15 Middlebury 2014 scenes in canonical production **F mode** (`Prior + Refiner + 4SGM`) in the identical execution environment (MSVC x64 Release, 16 threads, warmup=2, repeat=5):
+To guarantee that the introduction of `StereoSession`, `StereoWorkspace`, strided `ImageView8`, `PipelineStats`, and C ABI layers introduced zero performance regression against the P3 final optimization baseline (`f906b4d`), a matched baseline/candidate canonical benchmark was executed across all 15 Middlebury 2014 scenes in canonical production **F mode** (`Prior + Refiner + 4SGM`) in the same execution environment (MSVC x64 Release, 16 threads, warmup=2, repeat=5):
 
 | Middlebury 2014 Scene | Baseline `f906b4d` (ms) | P4 Final Candidate (ms) | Delta (ms) | Speedup (%) | Ratio ($P4/P3$) | Raw Float FNV-1a (64-bit) | Bit-Exact Parity |
 | :-------------------- | ----------------------: | ----------------------: | ---------: | ----------: | --------------: | :-----------------------: | :--------------: |
@@ -226,7 +226,7 @@ To guarantee that the introduction of `StereoSession`, `StereoWorkspace`, stride
 | **TOTAL / GEOMEAN**   |             **2140.57** |             **1972.60** |   **+167.97**| **+7.96% (1.0796×)** | **0.9263 (≤ 1.02)** | **MATCHED (15/15)** | **100% BIT-EXACT** |
 
 ### Final Technical Evaluation
-1. **Canonical Runtime Performance**: Under full canonical F-mode, total pipeline latency improved from **2140.57 ms to 1972.60 ms** (**+8.52% overall, +7.96% geomean**). Across all 15 benchmark scenes, the runtime ratio satisfies $P4 / P3 \le 0.9772 \ll 1.02$, with zero performance regression on any scene.
+1. **Canonical Runtime Performance**: Under full canonical F-mode, total pipeline latency improved from **2140.57 ms to 1972.60 ms** (**+8.52% speedup, 7.85% latency reduction, +7.96% geomean**). Across all 15 benchmark scenes, the runtime ratio satisfies $P4 / P3 \le 0.9772 \ll 1.02$, with zero performance regression on any scene.
 2. **True Numerical & Raw-Disparity Invariance**: Every output disparity map was exported as raw IEEE-754 32-bit float PFM payload and hashed with FNV-1a 64-bit and SHA-256. All 15 scenes demonstrated 100% byte-for-byte exact parity between baseline `f906b4d` and P4 final candidate. Furthermore, synthetic contract fingerprints in `test_api_contract.cpp` are explicitly asserted against frozen golden constants.
 3. **Memory Safety & Accounting Integrity**: Capacity-based workspace retained-memory accounting guarantees accurate reporting on dynamic stream size changes; pre-compute checked bounds prevent integer overflow; default production mode maintains strict 0-byte retention.
 4. **C ABI Stability**: Frozen `apg_session_options_t` layout with `struct_size` version guarding and pure C99 compatibility.
