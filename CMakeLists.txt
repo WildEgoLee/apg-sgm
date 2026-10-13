@@ -86,3 +86,7 @@ add_test(NAME session COMMAND test_session)
 add_executable(test_image_view tests/test_image_view.cpp)
 target_link_libraries(test_image_view PRIVATE apg_sgm)
 add_test(NAME image_view COMMAND test_image_view)
+
+add_executable(test_observability tests/test_observability.cpp)
+target_link_libraries(test_observability PRIVATE apg_sgm)
+add_test(NAME observability COMMAND test_observability)
