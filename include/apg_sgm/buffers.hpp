@@ -55,6 +55,7 @@ public:
     }
 
     size_t bytes() const { return data_.size() * sizeof(T); }
+    size_t capacity_bytes() const { return data_.capacity() * sizeof(T); }
 
 private:
     int w_ = 0, h_ = 0, d0_ = 0, D_ = 0;
@@ -149,8 +150,8 @@ struct PipelineBuffers {
         total += supports.capacity() * sizeof(SupportMatch);
         total += d_prior.bytes() + prior_confidence.bytes() + prior_spread.bytes();
         total += d_prior_min.bytes() + d_prior_max.bytes();
-        total += cost.bytes() + cost32.bytes() + cost_right.bytes();
-        total += packed_cost.bytes() + packed_sgm16.bytes() + packed_cost32.bytes();
+        total += cost.capacity_bytes() + cost32.capacity_bytes() + cost_right.capacity_bytes();
+        total += packed_cost.allocated_bytes() + packed_sgm16.allocated_bytes() + packed_cost32.allocated_bytes();
         total += disparity.bytes() + d_before_refine.bytes() + d_after_refine.bytes();
         total += disparity_right.bytes() + confidence.bytes();
         total += invalid_reason.bytes() + reliable_mask.bytes();

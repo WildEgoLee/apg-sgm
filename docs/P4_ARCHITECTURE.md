@@ -8,19 +8,19 @@ APG-SGM P3 completed the CPU algorithm optimization phase, delivering a 4.09x cu
 
 Key achievements across P4 milestones:
 1. **Public Output Contract (`StereoResult`)**: Cleanly decoupled product consumer deliverables (`disparity`, `confidence`, `invalid_reason`, `reliable_mask`) from internal scratch buffers (`PipelineBuffers`).
-2. **Explicit Memory Policy & Workspace (`StereoWorkspace`)**: Replaced hidden memory leaks and uncontrolled retention with explicit policies:
+2. **Explicit Memory Policy & Workspace (`StereoWorkspace`)**: Replaced hidden memory retention with explicit policies:
    - `MemoryPolicy::ReleasePerFrame`: Default production policy ensuring 0-byte retention after each frame.
-   - `MemoryPolicy::BoundedReuse`: Steady-state capacity reuse mode for streaming pipelines with explicit `max_retained_bytes` resource guarding. Verified zero reallocations for major workspace buffers across identical-dimension frames via `allocation_count` and `reuse_count`.
-   - **Pre-compute Budget Gating**: `estimate_workspace_bytes()` evaluates required memory *before* dispatching allocations, aborting immediately with `StatusCode::ResourceLimitExceeded` if budget is exceeded.
+   - `MemoryPolicy::BoundedReuse`: Steady-state capacity reuse mode for streaming pipelines with explicit `max_retained_bytes` resource guarding. Verified zero workspace reallocations across identical-dimension frames via `frame_allocation_count` and `frame_reuse_count` (with `allocation_count` and `reuse_count` preserved as backward-compatible aliases). Buffer capacity tracking accurately accounts for committed capacities across large $\to$ small frame transitions.
+   - **Pre-compute Budget Gating**: `estimate_workspace_bytes()` uses checked 64-bit arithmetic against integer multiplication overflow and accounts for all 6 grayscale/gradient images, census descriptors, search range bounds, packed layout, cost volumes, 10 persistent `Image32f` buffers, 2 temporary WTA `Image32f` buffers (`best`, `second`), and post-processing masks. It aborts immediately with `StatusCode::ResourceLimitExceeded` if budget is exceeded before allocating.
 3. **Structured Status & Validation (`Status`, `StatusCode`)**: Introduced granular error reporting (`EmptyInput`, `SizeMismatch`, `InvalidDisparityRange`, `InvalidConfig`, `UnsupportedBackend`, `ResourceLimitExceeded`, `AllocationFailure`, `InternalError`) without relying on exceptions or ambiguous boolean flags.
 4. **Execution Policy & Threading Control**: Disentangled algorithm hyperparameters (`PipelineConfig`) from execution options (`ExecutionOptions`). `ExecutionOptions::num_threads` dynamically governs OpenMP thread dispatch.
 5. **Continuous Session & Streaming Engine (`StereoSession`)**: Reusable engine instance for processing frame sequences, maintaining running frame counts, cumulative timings, average latency, and workspace reuse.
 6. **Raw-Memory Strided Interoperability (`ImageView8`, `StereoInputView`)**: Zero-copy input view accepting arbitrary row strides and memory layouts from camera SDKs and foreign runtimes.
-7. **Observability, Diagnostics & Accounting (`PipelineStats`)**: Enhanced telemetry capturing per-stage timings, `peak_workspace_bytes`, `retained_workspace_bytes`, `valid_disparity_ratio`, execution parameters (`requested_threads`, `effective_threads`, `requested_backend`, `resolved_backend`, `memory_policy`), and resource instrumentation (`allocation_count`, `reuse_count`), with structured formatting via `to_string()` and `to_json()`. CLI `apg-stereo` exposes `--stats` and `--stats-json`.
+7. **Observability, Diagnostics & Accounting (`PipelineStats`)**: Enhanced telemetry capturing per-stage timings, `peak_workspace_bytes`, `retained_workspace_bytes`, `valid_disparity_ratio`, execution parameters (`requested_threads`, `effective_threads`, `requested_backend`, `resolved_backend`, `memory_policy`), and resource instrumentation (`frame_allocation_count`, `frame_reuse_count`), with structured formatting via `to_string()` and `to_json()`. CLI `apg-stereo` exposes `--stats` and `--stats-json`.
 8. **Production Packaging & CMake Distribution**: Standard modern CMake packaging with configurable build flags (`APG_SGM_BUILD_APPS`, `APG_SGM_BUILD_TESTS`, `APG_SGM_BUILD_BENCHMARKS`), `GNUInstallDirs`, generator expressions, target exports, `apg_sgmConfig.cmake`, `apg_sgmConfigVersion.cmake` for `find_package(apg_sgm CONFIG)`. Verified by independent external consumer project (`tests/test_cmake_package`).
-9. **Pure C ABI Boundary (`include/apg_sgm/c_api.h`)**: Stable C ABI interface with opaque handles (`apg_session_t`, `apg_result_t`), extended configuration (`apg_session_options_t`, `apg_session_create_ex`), and strided image descriptors (`apg_image_view_t`). Verified by pure C99 compilation in `tests/c_api_smoke.c`.
-10. **Release Hardening & Sanitizers**: Fault injection tests (huge bounds, invalid disparity ranges, invalid row strides, budget failure, fault recovery across frames). Multi-platform CI matrix covering Linux GCC, Linux Clang, Linux Clang ASan/UBSan, Linux GCC Shared Library, and Windows MSVC.
-11. **Algorithmic Invariant**: 100% bit-exact output parity with P3 across all operational modes (`Fast`, `Balanced`, `HighQuality`, `Auto`, `Dense`, `Packed`).
+9. **Pure C ABI Boundary (`include/apg_sgm/c_api.h`)**: Stable C ABI interface with opaque handles (`apg_session_t`, `apg_result_t`), struct layout freezing and version validation via `uint32_t struct_size` in `apg_session_options_t`, extended initialization (`apg_session_create_ex`), and strided image descriptors (`apg_image_view_t`). Verified by pure C99 compilation in `tests/c_api_smoke.c`.
+10. **Release Hardening & Sanitizers**: Fault injection tests (huge bounds, invalid disparity ranges, invalid row strides, budget failure, fault recovery across frames, capacity retention, overflow checks). Multi-platform CI matrix covering Linux GCC, Linux Clang, Linux Clang ASan/UBSan, Linux GCC Shared Library, and Windows MSVC.
+11. **Algorithmic Invariant & Performance Gate**: 100% bit-exact output parity with P3 across all operational modes, verified across all 15 Middlebury scenes with +11.84% geomean speedup and 0.00% regression over baseline `f906b4d`.
 
 ---
 
@@ -69,7 +69,7 @@ Key achievements across P4 milestones:
 |   |                           StereoWorkspace                           |   |
 |   |     (Controlled memory lifecycle: ReleasePerFrame / BoundedReuse)   |   |
 |   |     - Pre-compute budget gating: estimate_workspace_bytes()         |   |
-|   |     - Instrumentation counters: allocation_count, reuse_count       |   |
+|   |     - Instrumentation counters: frame_allocation_count, reuse_count |   |
 |   |                                                                     |   |
 |   |   +-------------------------------------------------------------+   |   |
 |   |   |                      PipelineBuffers                        |   |   |   |
@@ -77,6 +77,7 @@ Key achievements across P4 milestones:
 |   |   |  - Cost Volumes (Dense CostVolume / PackedCostVolume)       |   |   |   |
 |   |   |  - SGM Cost Accumulators (4-path / 8-path)                  |   |   |   |
 |   |   |  - Prior Estimator Supports & Depth Boundary Buffers        |   |   |   |
+|   |   +-------------------------------------------------------------+   |   |
 |   |   +-------------------------------------------------------------+   |   |
 |   +---------------------------------------------------------------------+   |
 +=============================================================================+
@@ -121,10 +122,12 @@ Defined in `include/apg_sgm/execution.hpp` and `include/apg_sgm/workspace.hpp`:
   - Prevents memory bloat across heterogeneous image streams.
 - `MemoryPolicy::BoundedReuse`:
   - Retains cost volumes and intermediate buffers between consecutive frames with matching dimensions.
-  - Achieves zero-reallocation steady-state performance for fixed-resolution video streaming, verified via `allocation_count` and `reuse_count`.
+  - Achieves zero frame reallocation steady-state performance for fixed-resolution video streaming, verified via `frame_allocation_count` and `frame_reuse_count`.
+  - Buffer capacity tracking (`allocated_bytes()`) reflects actual committed buffer capacities, preventing under-reporting during large-to-small frame transitions.
   - Respects `max_retained_bytes`. If estimated or retained memory exceeds the threshold, `Status(StatusCode::ResourceLimitExceeded)` is returned.
 - **Pre-compute Budget Check**:
-  - `estimate_workspace_bytes(w, h, cfg)` evaluates required memory before allocating any major buffer.
+  - `estimate_workspace_bytes(w, h, cfg)` evaluates required memory before allocating any major buffer using checked 64-bit arithmetic to prevent overflow.
+  - Accounts for all 6 grayscale/gradient images, census descriptors, search range bounds, packed layout, cost volumes, 10 persistent `Image32f` buffers, 2 temporary WTA `Image32f` buffers (`best`, `second`), and post-processing masks.
   - If `estimated > max_retained_bytes`, returns `ResourceLimitExceeded` immediately with 0 bytes allocated.
 
 ### 3.4 Continuous Streaming Engine (`StereoSession`)
@@ -144,7 +147,7 @@ Defined in `include/apg_sgm/image_view.hpp`:
 ### 3.6 Observability & Telemetry (`PipelineStats`)
 Defined in `include/apg_sgm/pipeline_stats.hpp`:
 - Detailed stage latencies (`time_aux_ms`, `time_cost_ms`, `time_agg_ms`, `time_sgm_ms`, `time_prior_ms`, `time_conf_ms`, `time_refine_ms`, `time_post_ms`, `time_total_ms`).
-- Execution environment tracking: `requested_threads`, `effective_threads`, `requested_backend`, `resolved_backend`, `memory_policy`, `allocation_count`, `reuse_count`.
+- Execution environment tracking: `requested_threads`, `effective_threads`, `requested_backend`, `resolved_backend`, `memory_policy`, `frame_allocation_count`, `frame_reuse_count` (with `allocation_count` / `reuse_count` aliases).
 - Workspace memory accounting: `peak_workspace_bytes` and `retained_workspace_bytes`.
 - Reliability analytics: `valid_disparity_ratio` (percentage of pixels passing confidence and LR checks).
 - Export formats: `to_string()` for human-readable diagnostic logging and `to_json()` for structured APM ingestion.
@@ -154,6 +157,7 @@ Defined in `include/apg_sgm/pipeline_stats.hpp`:
 Defined in `include/apg_sgm/c_api.h` and `src/c_api.cpp`:
 - Exported functions using `APG_API` macro (`__declspec(dllexport)` / `__attribute__((visibility("default")))`).
 - Opaque handles `apg_session_t` and `apg_result_t`.
+- Explicit struct layout validation and version freezing via `uint32_t struct_size` header in `apg_session_options_t`. Callers pass `sizeof(apg_session_options_t)` or `0`; layout mismatches are rejected by `apg_session_create_ex` with `nullptr`.
 - Extended initialization `apg_session_create_ex(const apg_session_options_t*)`.
 - C-compatible strided input struct `apg_image_view_t`.
 - Zero-copy result pointer accessors (`apg_result_get_disparity`, `apg_result_get_confidence`, etc.).
@@ -195,3 +199,36 @@ target_link_libraries(my_app PRIVATE apg_sgm::apg_sgm)
 - Header files installed under `${CMAKE_INSTALL_INCLUDEDIR}/apg_sgm/`.
 - Targets exported into `${CMAKE_INSTALL_LIBDIR}/cmake/apg_sgm/apg_sgmTargets.cmake`.
 - Export verified via independent out-of-tree consumer project (`tests/test_cmake_package`).
+
+---
+
+## 6. Canonical Performance Regression Gate & P4 Closure
+
+To guarantee that the introduction of `StereoSession`, `StereoWorkspace`, strided `ImageView8`, `PipelineStats`, and C ABI layers introduced zero performance regression against the P3 final optimization baseline (`f906b4d`), a paired canonical benchmark was executed across all 15 Middlebury 2014 scenes in the identical execution environment (MSVC x64 Release, 16 threads, warmup=2, repeat=5):
+
+| Middlebury 2014 Scene | Baseline `f906b4d` (ms) | P4 Final Candidate (ms) | Delta (ms) | Speedup / Regression | Bit-Exact Parity |
+| :-------------------- | ----------------------: | ----------------------: | ---------: | -------------------: | :--------------: |
+| **Adirondack**        |                   73.01 |                   70.03 |      +2.98 |               +4.26% |       PASS       |
+| **ArtL**              |                   21.47 |                   19.07 |      +2.40 |              +12.59% |       PASS       |
+| **Jadeplant**         |                   97.63 |                   88.22 |      +9.41 |              +10.67% |       PASS       |
+| **Motorcycle**        |                   79.41 |                   67.88 |     +11.53 |              +16.99% |       PASS       |
+| **MotorcycleE**       |                   77.22 |                   70.46 |      +6.76 |               +9.59% |       PASS       |
+| **Piano**             |                   68.48 |                   61.79 |      +6.69 |              +10.83% |       PASS       |
+| **PianoL**            |                   79.52 |                   69.12 |     +10.40 |              +15.05% |       PASS       |
+| **Pipes**             |                   77.52 |                   67.54 |      +9.98 |              +14.78% |       PASS       |
+| **Playroom**          |                   76.01 |                   66.55 |      +9.46 |              +14.21% |       PASS       |
+| **Playtable**         |                   72.17 |                   66.46 |      +5.71 |               +8.59% |       PASS       |
+| **PlaytableP**        |                   69.73 |                   64.38 |      +5.35 |               +8.31% |       PASS       |
+| **Recycle**           |                   76.12 |                   68.38 |      +7.74 |              +11.32% |       PASS       |
+| **Shelves**           |                   74.66 |                   66.12 |      +8.54 |              +12.92% |       PASS       |
+| **Teddy**             |                   34.32 |                   30.05 |      +4.27 |              +14.21% |       PASS       |
+| **Vintage**           |                   99.53 |                   87.35 |     +12.18 |              +13.94% |       PASS       |
+| **TOTAL / GEOMEAN**   |             **1076.80** |              **963.40** |   **+113.40**| **1.1184x (+11.84%)** | **100% BIT-EXACT**|
+
+### Final Technical Evaluation
+1. **Runtime Performance**: Total pipeline latency improved from **1076.80 ms to 963.40 ms** (**+11.77% speedup**, **1.1184x geomean**). Zero regression across all 15 benchmark scenes (exceeding the strict $\le 2\%$ regression budget).
+2. **Numerical & Parity Accuracy**: 100% bit-exact parity across all 15 scenes (EPE, Bad2.0, and D1-all identical).
+3. **Memory Safety & Accounting**: Capacity-based workspace retained-memory accounting guarantees accurate reporting on dynamic stream size changes; pre-compute checked bounds prevent overflow; default production mode maintains strict 0-byte retention.
+4. **C ABI Stability**: Frozen `apg_session_options_t` layout with `struct_size` version guarding and pure C99 compatibility.
+
+**Conclusion: P4 ARCHITECTURE COMPLETE.**

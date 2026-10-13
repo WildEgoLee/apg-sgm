@@ -106,6 +106,8 @@ static void test_bounded_reuse_steady_state() {
     assert(s1.ok());
     assert(stats1.allocation_count == 1);
     assert(stats1.reuse_count == 0);
+    assert(stats1.frame_allocation_count == 1);
+    assert(stats1.frame_reuse_count == 0);
 
     // Frame 2: Same dimension and configuration -> Must reuse existing workspace allocations!
     PipelineStats stats2;
@@ -113,6 +115,8 @@ static void test_bounded_reuse_steady_state() {
     assert(s2.ok());
     assert(stats2.allocation_count == 1);
     assert(stats2.reuse_count == 1);
+    assert(stats2.frame_allocation_count == 1);
+    assert(stats2.frame_reuse_count == 1);
 
     // Frame 3: Still same dimensions -> reuse increments again
     PipelineStats stats3;
@@ -120,8 +124,58 @@ static void test_bounded_reuse_steady_state() {
     assert(s3.ok());
     assert(stats3.allocation_count == 1);
     assert(stats3.reuse_count == 2);
+    assert(stats3.frame_allocation_count == 1);
+    assert(stats3.frame_reuse_count == 2);
 
     std::cout << "[PASS] test_bounded_reuse_steady_state\n";
+}
+
+static void test_retained_memory_large_to_small_accounting() {
+    ExecutionOptions opts;
+    opts.memory_policy = MemoryPolicy::BoundedReuse;
+    StereoSession session(PipelineConfig::from_mode(QualityMode::Fast, 32), opts);
+
+    Image8 left_large(128, 96, 1);
+    Image8 right_large(128, 96, 1);
+    left_large.fill(120);
+    right_large.fill(120);
+
+    StereoResult result;
+    PipelineStats stats_large;
+    Status s1 = session.process_status(left_large, right_large, result, &stats_large);
+    assert(s1.ok());
+    const size_t large_bytes = session.allocated_bytes();
+    assert(large_bytes > 0);
+    assert(stats_large.retained_workspace_bytes == large_bytes);
+
+    // Now process a smaller frame: capacities should be retained, not truncated
+    Image8 left_small(64, 48, 1);
+    Image8 right_small(64, 48, 1);
+    left_small.fill(120);
+    right_small.fill(120);
+
+    PipelineStats stats_small;
+    Status s2 = session.process_status(left_small, right_small, result, &stats_small);
+    assert(s2.ok());
+    const size_t small_bytes = session.allocated_bytes();
+    assert(stats_small.retained_workspace_bytes == small_bytes);
+
+    // Critical assertion: retained memory accounting must reflect actual capacity,
+    // so small_bytes must be >= large_bytes (no under-reporting of retained heap capacity).
+    assert(small_bytes >= large_bytes);
+    std::cout << "[PASS] test_retained_memory_large_to_small_accounting\n";
+}
+
+static void test_estimate_workspace_overflow() {
+    PipelineConfig cfg = PipelineConfig::from_mode(QualityMode::Fast, 64);
+    // Extreme dimensions that overflow uint64_t multiplication
+    size_t est = estimate_workspace_bytes(10000000, 10000000, cfg);
+    assert(est == SIZE_MAX);
+
+    // Negative / zero inputs
+    assert(estimate_workspace_bytes(-1, 100, cfg) == 0);
+    assert(estimate_workspace_bytes(100, 0, cfg) == 0);
+    std::cout << "[PASS] test_estimate_workspace_overflow\n";
 }
 
 int main() {
@@ -130,6 +184,8 @@ int main() {
     test_precompute_budget_gate();
     test_session_fault_recovery();
     test_bounded_reuse_steady_state();
+    test_retained_memory_large_to_small_accounting();
+    test_estimate_workspace_overflow();
     std::cout << "All hardening tests passed successfully!\n";
     return 0;
 }

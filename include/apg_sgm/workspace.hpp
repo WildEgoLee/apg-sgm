@@ -22,14 +22,18 @@ public:
         return buffers_.allocated_bytes();
     }
 
-    size_t allocation_count() const { return allocation_count_; }
-    size_t reuse_count() const { return reuse_count_; }
+    size_t frame_allocation_count() const { return frame_allocation_count_; }
+    size_t frame_reuse_count() const { return frame_reuse_count_; }
+
+    // Backward compatibility aliases
+    size_t allocation_count() const { return frame_allocation_count_; }
+    size_t reuse_count() const { return frame_reuse_count_; }
 
     void record_frame(int w, int h, int d_max, bool was_reuse) {
         if (was_reuse) {
-            ++reuse_count_;
+            ++frame_reuse_count_;
         } else {
-            ++allocation_count_;
+            ++frame_allocation_count_;
         }
         last_w_ = w;
         last_h_ = h;
@@ -50,8 +54,8 @@ public:
     }
 
     void reset_counters() {
-        allocation_count_ = 0;
-        reuse_count_ = 0;
+        frame_allocation_count_ = 0;
+        frame_reuse_count_ = 0;
     }
 
     void trim(size_t max_bytes) {
@@ -66,8 +70,8 @@ private:
     int last_w_ = 0;
     int last_h_ = 0;
     int last_dmax_ = 0;
-    size_t allocation_count_ = 0;
-    size_t reuse_count_ = 0;
+    size_t frame_allocation_count_ = 0;
+    size_t frame_reuse_count_ = 0;
 };
 
 } // namespace apg

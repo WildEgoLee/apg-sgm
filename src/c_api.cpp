@@ -21,6 +21,7 @@ struct apg_result_s {
 
 apg_session_t apg_session_create(int quality_mode, int memory_policy) {
     apg_session_options_t opts = {};
+    opts.struct_size = static_cast<uint32_t>(sizeof(apg_session_options_t));
     opts.quality_mode = quality_mode;
     opts.memory_policy = memory_policy;
     opts.max_retained_bytes = 0;
@@ -33,6 +34,9 @@ apg_session_t apg_session_create(int quality_mode, int memory_policy) {
 
 apg_session_t apg_session_create_ex(const apg_session_options_t* options) {
     if (!options) return nullptr;
+    if (options->struct_size != 0 && options->struct_size != sizeof(apg_session_options_t)) {
+        return nullptr;
+    }
     try {
         apg::QualityMode qm = apg::QualityMode::Balanced;
         if (options->quality_mode == APG_QUALITY_FAST) {

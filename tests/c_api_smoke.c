@@ -16,6 +16,7 @@ int main(void) {
     /* Session creation via extended options */
     apg_session_options_t opts;
     memset(&opts, 0, sizeof(opts));
+    opts.struct_size = (uint32_t)sizeof(opts);
     opts.quality_mode = APG_QUALITY_FAST;
     opts.memory_policy = APG_MEMORY_BOUNDED_REUSE;
     opts.max_retained_bytes = 100 * 1024 * 1024; /* 100 MB budget */
@@ -23,6 +24,11 @@ int main(void) {
     opts.backend = 0; /* Auto */
     opts.min_disparity = 0;
     opts.max_disparity = 32;
+
+    /* Verify ABI struct_size validation rejects mismatch */
+    opts.struct_size = 999;
+    assert(apg_session_create_ex(&opts) == NULL);
+    opts.struct_size = (uint32_t)sizeof(opts);
 
     apg_session_t session = apg_session_create_ex(&opts);
     assert(session != NULL);
