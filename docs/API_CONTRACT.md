@@ -46,7 +46,7 @@
    - Valid disparity estimates across `Auto`, `Dense`, and `Packed` backends must agree within subpixel parity tolerances ($< 10^{-4}$ disparity difference on valid pixels, exact on invalid pixels).
 3. **Memory Safety & Retention**:
    - Under `MemoryPolicy::ReleasePerFrame` (default), memory retained in `StereoWorkspace` after frame processing must be exactly 0 bytes.
-   - Under `MemoryPolicy::BoundedReuse`, memory retained between frames with identical dimensions does not reallocate workspace buffers (`frame_allocation_count == 1`, `frame_reuse_count == N - 1`). Workspace capacity tracking reflects actual committed buffer capacities (`allocated_bytes()`), ensuring that on large $\to$ small frame transitions, retained memory is never under-reported.
+   - Under `MemoryPolicy::BoundedReuse`, major retained workspace capacities are reused across compatible frames; `frame_reuse_count` tracks frame-level reuse epochs, not individual heap-allocation events. Workspace capacity tracking reflects actual committed buffer capacities (`allocated_bytes()`), ensuring that on large $\to$ small frame transitions, retained memory is never under-reported.
    - Pre-compute budget gating: `estimate_workspace_bytes()` uses checked arithmetic against integer multiplication overflow, accounting for all 6 grayscale/gradient images, census descriptors, search range bounds, packed layout and cost volumes, 10 persistent `Image32f` buffers, 2 temporary WTA `Image32f` buffers (`best`, `second`), and post-processing masks. It evaluates memory demand prior to allocation and rejects over-budget requests with `StatusCode::ResourceLimitExceeded`.
 4. **Execution Options & Threading**:
    - `ExecutionOptions::num_threads` takes precedence over `PipelineConfig::num_threads`. When set to 0, it falls back to config or OpenMP defaults.
@@ -62,6 +62,6 @@
 2. **C ABI**:
    - Exported under `include/apg_sgm/c_api.h` with symbol export macro `APG_API`.
    - ABI stability guaranteed across minor releases through opaque handle design (`apg_session_t`, `apg_result_t`).
-   - Extended options structure `apg_session_options_t` includes `uint32_t struct_size` at the head for explicit struct layout versioning and validation. Callers pass `sizeof(apg_session_options_t)` or `0`; mismatches are rejected with `nullptr`. Struct layout is frozen for 1.x.
+   - Extended options structure `apg_session_options_t` includes `uint32_t struct_size` at the head for explicit struct layout versioning and validation. Callers pass `sizeof(apg_session_options_t)`. `0` is accepted as a legacy initialization convention for callers built against the current struct layout; it does not provide binary compatibility with pre-struct_size layouts. Layout mismatches are rejected by `apg_session_create_ex` with `nullptr`. Struct layout is frozen for 1.x.
    - Extended initialization `apg_session_create_ex` provides full C control over memory policy, budget, threads, backend, and disparity range.
    - Verified pure C99 compatibility via `c_api_smoke.c`.
