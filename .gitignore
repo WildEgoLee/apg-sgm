@@ -11,6 +11,7 @@ cmake-build-*/
 *.pfm
 benchmarks/data/
 results/*.csv
+results/hierarchical_study/
 !results/.gitkeep
 .DS_Store
 *.pyd

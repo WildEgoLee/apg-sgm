@@ -7,6 +7,7 @@
 #include "apg_sgm/prior_estimator.hpp"
 #include "apg_sgm/refiner.hpp"
 #include "apg_sgm/sgm_optimizer.hpp"
+#include "hierarchical_stereo.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -435,8 +436,11 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
     };
 
     size_t workspace_high_water = out.allocated_bytes();
+    auto sample_workspace_extra = [&](size_t coarse_bytes) {
+        workspace_high_water = std::max(workspace_high_water, out.allocated_bytes() + coarse_bytes);
+    };
     auto sample_workspace = [&] {
-        workspace_high_water = std::max(workspace_high_water, out.allocated_bytes());
+        sample_workspace_extra(0);
     };
 
     const auto t_total_start = time_now();
@@ -445,7 +449,17 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
     cost.compute_aux(left, right, cfg_, out);
     sample_workspace();
     const auto t1 = time_now();
-    prior.estimate(cfg_, out);
+    if (ExperimentalHierarchicalScope::is_enabled()) {
+        HierarchicalStereo::estimate_search_range(
+            ExperimentalHierarchicalScope::current_config(),
+            cfg_, out,
+            &ExperimentalHierarchicalScope::current_telemetry(),
+            sample_workspace_extra,
+            num_threads
+        );
+    } else {
+        prior.estimate(cfg_, out);
+    }
     sample_workspace();
     const auto t2 = time_now();
 

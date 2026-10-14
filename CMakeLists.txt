@@ -35,6 +35,7 @@ add_library(apg_sgm
     src/ablation.cpp
     src/metrics.cpp
     src/c_api.cpp
+    src/hierarchical_stereo.cpp
 )
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -93,6 +94,7 @@ endif()
 
 if(APG_SGM_BUILD_BENCHMARKS)
     add_executable(apg-benchmark apps/benchmark_stereo.cpp)
+    target_include_directories(apg-benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(apg-benchmark PRIVATE apg_sgm)
 endif()
 
@@ -146,6 +148,11 @@ if(APG_SGM_BUILD_TESTS)
     add_executable(test_hardening tests/test_hardening.cpp)
     target_link_libraries(test_hardening PRIVATE apg_sgm)
     add_test(NAME hardening COMMAND test_hardening)
+
+    add_executable(test_hierarchical tests/test_hierarchical.cpp)
+    target_include_directories(test_hierarchical PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_hierarchical PRIVATE apg_sgm)
+    add_test(NAME hierarchical COMMAND test_hierarchical)
 
     add_executable(c_api_smoke tests/c_api_smoke.c)
     target_link_libraries(c_api_smoke PRIVATE apg_sgm)
