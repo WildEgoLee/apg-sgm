@@ -27,6 +27,8 @@ struct PipelineStats {
     size_t cost_bytes = 0;
     size_t aggregated_cost_bytes = 0;
     size_t estimated_peak_bytes = 0;
+    /// High-water retained/allocated capacity of PipelineBuffers-owned storage during this frame.
+    /// It excludes function-local temporary allocations, allocator/runtime overhead and process RSS/private commit.
     size_t peak_workspace_bytes = 0;
     size_t retained_workspace_bytes = 0;
     size_t frame_allocation_count = 0;
