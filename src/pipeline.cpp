@@ -434,12 +434,19 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
         return std::chrono::duration<double, std::milli>(t1 - t0).count();
     };
 
+    size_t workspace_high_water = out.allocated_bytes();
+    auto sample_workspace = [&] {
+        workspace_high_water = std::max(workspace_high_water, out.allocated_bytes());
+    };
+
     const auto t_total_start = time_now();
 
     const auto t0 = time_now();
     cost.compute_aux(left, right, cfg_, out);
+    sample_workspace();
     const auto t1 = time_now();
     prior.estimate(cfg_, out);
+    sample_workspace();
     const auto t2 = time_now();
 
     Image32f best, second;
@@ -453,23 +460,28 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
     const bool use_packed = cfg_.resolves_to_packed();
 
     if (use_packed) {
+        sample_workspace();
         out.packed_cost32.release();
 
         auto layout = PackedVolumeLayout::from_range(out.range);
         out.packed_cost.allocate_for_overwrite(layout);
 
         cost.compute_volume_packed(cfg_, out, out.packed_cost);
+        sample_workspace();
         const auto t3 = time_now();
 
         wta_right_from_packed_volume(cfg_, out.packed_cost, out.disparity_right);
+        sample_workspace();
         const auto t4 = time_now();
 
         agg.aggregate_packed(cfg_, out.left_gray, out.packed_cost);
+        sample_workspace();
         const auto t5 = time_now();
 
         const int npath = (cfg_.sgm.paths == PathType::Path8) ? 8 : 4;
         const bool use_u16 = can_use_u16_sgm_accumulator(cfg_, npath);
 
+        sample_workspace();
         if (use_u16) {
             out.packed_cost32.release();
             sgm.optimize_packed(cfg_, out.left_gray, out.packed_cost, out.packed_sgm16);
@@ -477,6 +489,7 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
             out.packed_sgm16.release();
             sgm.optimize_packed(cfg_, out.left_gray, out.packed_cost, out.packed_cost32);
         }
+        sample_workspace();
         const auto t6 = time_now();
 
         if (use_u16) {
@@ -484,6 +497,7 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
         } else {
             sgm.winner_take_all_packed(cfg_, out.packed_cost32, out.disparity, &best, &second);
         }
+        sample_workspace();
         const auto t7 = time_now();
 
         t_cost_ms = elapsed_ms(t2, t3);
@@ -492,23 +506,29 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
         t_sgm_ms = elapsed_ms(t5, t6);
         t_wta_ms = elapsed_ms(t6, t7);
     } else {
+        sample_workspace();
         out.cost32.release();
 
         cost.compute_volume(cfg_, out);
+        sample_workspace();
         const auto t3 = time_now();
 
         // Compute right disparity from raw/local cost volume BEFORE left Cross-arm aggregation
         wta_right_from_left_volume(cfg_, out.cost, out.disparity_right);
+        sample_workspace();
         const auto t4 = time_now();
 
         agg.aggregate(cfg_, out);
+        sample_workspace();
         const auto t5 = time_now();
 
         // Optimize left volume with SGM streaming into out.cost32
         sgm.optimize(cfg_, out);
+        sample_workspace();
         const auto t6 = time_now();
 
         sgm.winner_take_all(cfg_, out.cost32, out.range, out.disparity, &best, &second);
+        sample_workspace();
         const auto t7 = time_now();
 
         t_cost_ms = elapsed_ms(t2, t3);
@@ -520,16 +540,19 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
 
     const auto t_wta_done = time_now();
     conf.estimate(cfg_, out, best, second);
+    sample_workspace();
     const auto t8 = time_now();
 
     out.d_before_refine = out.disparity;
     refiner.refine(cfg_, out);
     out.d_after_refine = out.disparity;
+    sample_workspace();
     const auto t9 = time_now();
 
     post.left_right_check(cfg_, out);
     post.fill_holes(cfg_, out);
     post.median(cfg_, out);
+    sample_workspace();
     const auto t10 = time_now();
 
     if (stats) {
@@ -623,8 +646,7 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
         stats->reliable_pixels = reliable;
         stats->unreliable_pixels = unreliable;
         stats->refine_changed_pixels = refine_changed;
-        stats->lr_fail_pixels = lr_fail;
-        stats->peak_workspace_bytes = out.allocated_bytes();
+        stats->peak_workspace_bytes = workspace_high_water;
 
         if (n_pixels > 0) {
             stats->valid_disparity_ratio = static_cast<float>(valid) / n_pixels;
