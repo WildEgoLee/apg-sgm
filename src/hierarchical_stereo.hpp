@@ -93,7 +93,7 @@ public:
         const PipelineConfig& cfg,
         PipelineBuffers& buf,
         HierarchicalTelemetry* telemetry = nullptr,
-        std::function<void()> on_coarse_alloc = nullptr,
+        std::function<void(size_t coarse_allocated_bytes)> on_coarse_sample = nullptr,
         int num_threads = 0
     );
 };

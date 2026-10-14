@@ -436,8 +436,11 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
     };
 
     size_t workspace_high_water = out.allocated_bytes();
+    auto sample_workspace_extra = [&](size_t coarse_bytes) {
+        workspace_high_water = std::max(workspace_high_water, out.allocated_bytes() + coarse_bytes);
+    };
     auto sample_workspace = [&] {
-        workspace_high_water = std::max(workspace_high_water, out.allocated_bytes());
+        sample_workspace_extra(0);
     };
 
     const auto t_total_start = time_now();
@@ -451,7 +454,7 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
             ExperimentalHierarchicalScope::current_config(),
             cfg_, out,
             &ExperimentalHierarchicalScope::current_telemetry(),
-            sample_workspace,
+            sample_workspace_extra,
             num_threads
         );
     } else {

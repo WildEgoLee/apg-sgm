@@ -109,7 +109,7 @@ bool HierarchicalStereo::estimate_search_range(
     const PipelineConfig& cfg,
     PipelineBuffers& buf,
     HierarchicalTelemetry* telemetry,
-    std::function<void()> on_coarse_alloc,
+    std::function<void(size_t coarse_allocated_bytes)> on_coarse_sample,
     int num_threads
 ) {
     const int W = buf.left_gray.width();
@@ -130,14 +130,17 @@ bool HierarchicalStereo::estimate_search_range(
     const int W_c = W / 2;
     const int H_c = H / 2;
 
-    if (!buf.coarse_buffers) {
-        buf.coarse_buffers = std::make_shared<PipelineBuffers>();
-    }
-    PipelineBuffers& cbuf = *buf.coarse_buffers;
+    PipelineBuffers cbuf;
+    auto sample_coarse = [&]() {
+        if (on_coarse_sample) {
+            on_coarse_sample(cbuf.allocated_bytes());
+        }
+    };
 
     // 1. 2x box downsampling of grayscale images
     cbuf.left = Image8(W_c, H_c, 1);
     cbuf.right = Image8(W_c, H_c, 1);
+    sample_coarse();
 
 #if defined(_OPENMP)
     if (num_threads > 0) omp_set_num_threads(num_threads);
@@ -181,6 +184,7 @@ bool HierarchicalStereo::estimate_search_range(
     // 3. Run coarse matching
     CostComputer cost_c;
     cost_c.compute_aux(ImageView8(cbuf.left), ImageView8(cbuf.right), cfg_c, cbuf);
+    sample_coarse();
 
     cbuf.range.allocate(W_c, H_c, cfg_c.min_disparity, cfg_c.max_disparity);
 #if defined(_OPENMP)
@@ -191,21 +195,22 @@ bool HierarchicalStereo::estimate_search_range(
             cbuf.range.set_pixel(x, y, cfg_c.min_disparity, std::min(cfg_c.max_disparity, x + 1));
         }
     }
+    sample_coarse();
 
     auto layout = PackedVolumeLayout::from_range(cbuf.range);
     cbuf.packed_cost.allocate_for_overwrite(layout);
-
-    // Capture memory high water when coarse volume is allocated
-    if (on_coarse_alloc) {
-        on_coarse_alloc();
-    }
+    sample_coarse();
 
     cost_c.compute_volume_packed(cfg_c, cbuf, cbuf.packed_cost);
+    sample_coarse();
+
     wta_right_from_packed(cfg_c, cbuf.packed_cost, cbuf.disparity_right);
+    sample_coarse();
 
     if (cfg_c.aggregation.enable) {
         CostAggregator agg_c;
         agg_c.aggregate_packed(cfg_c, cbuf.left_gray, cbuf.packed_cost);
+        sample_coarse();
     }
 
     const int npath = (cfg_c.sgm.paths == PathType::Path8) ? 8 : 4;
@@ -216,24 +221,33 @@ bool HierarchicalStereo::estimate_search_range(
     if (use_u16) {
         cbuf.packed_cost32.release();
         sgm_c.optimize_packed(cfg_c, cbuf.left_gray, cbuf.packed_cost, cbuf.packed_sgm16);
+        sample_coarse();
         sgm_c.winner_take_all_packed(cfg_c, cbuf.packed_sgm16, cbuf.disparity, &c_best, &c_second);
+        sample_coarse();
     } else {
         cbuf.packed_sgm16.release();
         sgm_c.optimize_packed(cfg_c, cbuf.left_gray, cbuf.packed_cost, cbuf.packed_cost32);
+        sample_coarse();
         sgm_c.winner_take_all_packed(cfg_c, cbuf.packed_cost32, cbuf.disparity, &c_best, &c_second);
+        sample_coarse();
     }
 
     ConfidenceEstimator conf_c;
     conf_c.estimate(cfg_c, cbuf, c_best, c_second);
+    sample_coarse();
 
     PostProcessor post_c;
     post_c.left_right_check(cfg_c, cbuf);
+    sample_coarse();
     if (cfg_c.post.max_fill_gap > 0) {
         post_c.fill_holes(cfg_c, cbuf);
+        sample_coarse();
     }
     post_c.median(cfg_c, cbuf);
+    sample_coarse();
 
     // 4. Release coarse temporary volumes to keep retained memory minimal
+    sample_coarse();
     cbuf.packed_cost.release();
     cbuf.packed_sgm16.release();
     cbuf.packed_cost32.release();
@@ -247,6 +261,7 @@ bool HierarchicalStereo::estimate_search_range(
     cbuf.right_gx.release(); cbuf.right_gy.release();
     cbuf.left_gray.release(); cbuf.right_gray.release();
     cbuf.left.release(); cbuf.right.release();
+    sample_coarse();
 
     // 5. Build full-resolution guided search range
     size_t coarse_valid_count = 0;
@@ -392,6 +407,9 @@ bool HierarchicalStereo::estimate_search_range(
         telemetry->full_range_pixel_ratio = n_pixels > 0 ? static_cast<float>(full_range_count / n_pixels) : 0.0f;
         telemetry->coarse_time_ms = elapsed_ms;
     }
+
+    cbuf.release();
+    sample_coarse();
 
     return true;
 }
