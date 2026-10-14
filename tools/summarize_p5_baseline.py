@@ -112,6 +112,26 @@ def aggregate_regions(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "peak_mb": max_peak_mb,
     }
 
+    has_telem = any("avg_states_per_pixel" in r for r in rows)
+    if has_telem:
+        sum_states_weighted = 0.0
+        sum_coarse_valid_weighted = 0.0
+        sum_fallback_weighted = 0.0
+        sum_full_range_weighted = 0.0
+        tot_eval_px = 0.0
+        for r in rows:
+            all_px = float(r.get("all_gt_pixels", 0.0) or 0.0)
+            tot_eval_px += all_px
+            sum_states_weighted += float(r.get("avg_states_per_pixel", 0.0) or 0.0) * all_px
+            sum_coarse_valid_weighted += float(r.get("coarse_valid_ratio", 0.0) or 0.0) * all_px
+            sum_fallback_weighted += float(r.get("fallback_pixel_ratio", 0.0) or 0.0) * all_px
+            sum_full_range_weighted += float(r.get("full_range_pixel_ratio", 0.0) or 0.0) * all_px
+        if tot_eval_px > 0:
+            agg["avg_states"] = sum_states_weighted / tot_eval_px
+            agg["coarse_valid_pct"] = (sum_coarse_valid_weighted / tot_eval_px) * 100.0
+            agg["fallback_pixel_pct"] = (sum_fallback_weighted / tot_eval_px) * 100.0
+            agg["full_range_pixel_pct"] = (sum_full_range_weighted / tot_eval_px) * 100.0
+
     for reg_key, _ in REGIONS:
         a = acc[reg_key]
         sum_valid = a["sum_valid_est"]
@@ -209,6 +229,15 @@ def summarize(csv_path: Path) -> None:
         r_b2_all = r_info["bad2_all"]
         r_tot = int(r_info["total_pixels"])
         print(f"| {label:<24} | {r_b2:12.2f}% | {r_vr:11.2f}% | {r_b2_all:24.2f}% | {r_tot:13,d} |")
+
+    if "avg_states" in agg:
+        print("\n### Search-Space Accounting Telemetry")
+        print("| Metric | Agg / Mean |")
+        print("| :--- | :---: |")
+        print(f"| Avg States / Pixel | {agg['avg_states']:.2f} |")
+        print(f"| Coarse Valid Ratio % | {agg['coarse_valid_pct']:.2f}% |")
+        print(f"| Fallback Pixel Ratio % | {agg['fallback_pixel_pct']:.2f}% |")
+        print(f"| Full Range Pixel Ratio % | {agg['full_range_pixel_pct']:.2f}% |")
 
 
 if __name__ == "__main__":

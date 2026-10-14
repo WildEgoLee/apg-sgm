@@ -3,6 +3,7 @@
 #include "apg_sgm/metrics.hpp"
 #include "apg_sgm/pipeline.hpp"
 #include "apg_sgm/pipeline_stats.hpp"
+#include "hierarchical_stereo.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -131,6 +132,11 @@ int main(int argc, char** argv) {
     int num_threads = 0;
     std::string backend_arg = "auto";
     bool verify_backends = false;
+    bool hierarchical_enable = false;
+    int hierarchical_radius = 8;
+    apg::HierarchicalFallback hierarchical_fallback = apg::HierarchicalFallback::NearestValid;
+    bool hierarchical_coarse_cross = true;
+    bool hierarchical_coarse_fill = true;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -154,6 +160,21 @@ int main(int argc, char** argv) {
             backend_arg = "packed";
         } else if (arg == "--verify-backends") {
             verify_backends = true;
+        } else if (arg == "--hierarchical") {
+            hierarchical_enable = true;
+        } else if (arg == "--hierarchical-radius" && i + 1 < argc) {
+            hierarchical_radius = std::stoi(argv[++i]);
+        } else if (arg == "--hierarchical-fallback" && i + 1 < argc) {
+            std::string fstr = argv[++i];
+            if (!apg::parse_hierarchical_fallback(fstr, hierarchical_fallback)) {
+                std::cerr << "Error: invalid hierarchical fallback policy '" << fstr
+                          << "'. Options: full_range, nearest_valid, expanded_radius\n";
+                return 1;
+            }
+        } else if (arg == "--hierarchical-no-cross") {
+            hierarchical_coarse_cross = false;
+        } else if (arg == "--hierarchical-no-fill") {
+            hierarchical_coarse_fill = false;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: apg-benchmark [options]\n"
                       << "Options:\n"
@@ -169,6 +190,15 @@ int main(int argc, char** argv) {
                       << "                        Volume backend policy (default: auto -> packed for Prior/HQ, dense otherwise)\n"
                       << "  --packed              Alias for --backend packed\n"
                       << "  --verify-backends     Verify 100% bit-exact parity between dense and packed backends\n"
+                      << "  --hierarchical        Enable hierarchical coarse-to-fine search space reduction\n"
+                      << "  --hierarchical-radius <N>\n"
+                      << "                        Radius R around coarse disparity (default: 8, options: 4, 8, 12, 16)\n"
+                      << "  --hierarchical-fallback <policy>\n"
+                      << "                        Fallback policy (full_range, nearest_valid, expanded_radius)\n"
+                      << "  --hierarchical-no-cross\n"
+                      << "                        Disable cross-aggregation at coarse level\n"
+                      << "  --hierarchical-no-fill\n"
+                      << "                        Disable hole filling at coarse level\n"
                       << "  --help, -h            Show this help message\n";
             return 0;
         } else {
@@ -346,7 +376,8 @@ int main(int argc, char** argv) {
         << "nonbnd_pixels,nonbnd_valid_est_pixels,nonbnd_valid_ratio,nonbnd_epe,nonbnd_bad05,nonbnd_bad10,nonbnd_bad20,nonbnd_bad30,nonbnd_d1,"
         << "lowtex_pixels,lowtex_valid_est_pixels,lowtex_valid_ratio,lowtex_epe,lowtex_bad05,lowtex_bad10,lowtex_bad20,lowtex_bad30,lowtex_d1,"
         << "hightex_pixels,hightex_valid_est_pixels,hightex_valid_ratio,hightex_epe,hightex_bad05,hightex_bad10,hightex_bad20,hightex_bad30,hightex_d1,"
-        << "peak_workspace_bytes,retained_workspace_bytes\n";
+        << "peak_workspace_bytes,retained_workspace_bytes,"
+        << "avg_states_per_pixel,coarse_valid_ratio,fallback_pixel_ratio,full_range_pixel_ratio\n";
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
@@ -396,6 +427,14 @@ int main(int argc, char** argv) {
             // Reused O(1) buffer across runs
             apg::PipelineBuffers bufs;
 
+            apg::HierarchicalConfig hcfg;
+            hcfg.enable = hierarchical_enable;
+            hcfg.radius = hierarchical_radius;
+            hcfg.fallback = hierarchical_fallback;
+            hcfg.coarse_cross_agg = hierarchical_coarse_cross;
+            hcfg.coarse_fill_holes = hierarchical_coarse_fill;
+            apg::ExperimentalHierarchicalScope hscope(hcfg);
+
             // Warmup runs
             for (int r = 0; r < warmup_runs; ++r) {
                 if (!matcher.compute(left_img, right_img, bufs, nullptr)) {
@@ -427,10 +466,20 @@ int main(int argc, char** argv) {
             });
             const auto& best_sample = samples[repeat_runs / 2];
 
+            apg::HierarchicalTelemetry best_telem;
+            if (hierarchical_enable) {
+                best_telem = apg::ExperimentalHierarchicalScope::current_telemetry();
+            } else {
+                best_telem.avg_states_per_pixel = best_sample.stats.mean_search_width;
+                best_telem.coarse_valid_ratio = 0.0f;
+                best_telem.fallback_pixel_ratio = 0.0f;
+                best_telem.full_range_pixel_ratio = 0.0f;
+            }
+
             // Evaluate metrics
             apg::StereoMetrics m;
             if (has_gt) {
-                const apg::SearchRange* range_ptr = cfg.prior.enable ? &bufs.range : nullptr;
+                const apg::SearchRange* range_ptr = (cfg.prior.enable || hierarchical_enable) ? &bufs.range : nullptr;
                 const apg::Image32f* before_refine_ptr = cfg.refine.enable ? &bufs.d_before_refine : nullptr;
                 const apg::Image32f* after_refine_ptr = cfg.refine.enable ? &bufs.d_after_refine : nullptr;
                 const apg::Image8* vis_ptr = has_vis ? &vis_mask : nullptr;
@@ -471,6 +520,16 @@ int main(int argc, char** argv) {
             std::cout << " | Time: " << std::setw(6) << std::setprecision(2) << best_sample.total_ms << " ms"
                       << " (SGM: " << std::setprecision(2) << best_sample.stats.timing.sgm_ms << " ms)"
                       << std::endl;
+
+            if (hierarchical_enable) {
+                std::cout << "  [Hierarchical R=" << hierarchical_radius
+                          << ", Fallback=" << apg::hierarchical_fallback_to_string(hierarchical_fallback)
+                          << " | AvgStates: " << std::fixed << std::setprecision(1) << best_telem.avg_states_per_pixel
+                          << " | CoarseValid: " << std::setprecision(1) << (best_telem.coarse_valid_ratio * 100.f) << "%"
+                          << " | Fallback: " << std::setprecision(1) << (best_telem.fallback_pixel_ratio * 100.f) << "%"
+                          << " | FullRange: " << std::setprecision(1) << (best_telem.full_range_pixel_ratio * 100.f) << "%"
+                          << " | CoarseTime: " << std::setprecision(2) << best_telem.coarse_time_ms << " ms]\n";
+            }
 
             // Output to CSV
             csv << backend_str << ","
@@ -641,7 +700,12 @@ int main(int argc, char** argv) {
                 << m.reg_high_texture.bad_3_0 << ","
                 << m.reg_high_texture.d1 << ","
                 << ((best_sample.stats.peak_workspace_bytes > 0) ? best_sample.stats.peak_workspace_bytes : best_sample.stats.estimated_peak_bytes) << ","
-                << best_sample.stats.retained_workspace_bytes << "\n";
+                << best_sample.stats.retained_workspace_bytes << ","
+                << std::fixed << std::setprecision(4)
+                << best_telem.avg_states_per_pixel << ","
+                << best_telem.coarse_valid_ratio << ","
+                << best_telem.fallback_pixel_ratio << ","
+                << best_telem.full_range_pixel_ratio << "\n";
             csv.flush();
 
             // Save disparity maps if requested
