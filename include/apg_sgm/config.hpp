@@ -65,6 +65,24 @@ struct PostParams {
     int max_fill_gap = 32;
 };
 
+enum class HierarchicalFallback {
+    NearestValid,
+    FullRange,
+    ExpandedRadius
+};
+
+struct HierarchicalConfig {
+    bool enable = false;
+    int radius = 4;
+    int scale = 2;
+    HierarchicalFallback fallback = HierarchicalFallback::NearestValid;
+    bool coarse_cross_agg = true;
+    bool coarse_fill_holes = true;
+    bool adaptive_radius = false;
+    float confidence_threshold = 0.5f;
+    int expanded_radius = 8;
+};
+
 struct PipelineConfig {
     QualityMode mode = QualityMode::Balanced;
     VolumeBackend volume_backend = VolumeBackend::Auto;
@@ -78,7 +96,7 @@ struct PipelineConfig {
     bool resolves_to_packed() const {
         if (volume_backend == VolumeBackend::Packed) return true;
         if (volume_backend == VolumeBackend::Dense) return false;
-        return prior.enable || use_packed_volume;
+        return prior.enable || hierarchical.enable || use_packed_volume;
     }
 
     CostParams cost;
@@ -88,6 +106,7 @@ struct PipelineConfig {
     ConfidenceParams confidence;
     RefineParams refine;
     PostParams post;
+    HierarchicalConfig hierarchical;
 
     static PipelineConfig from_mode(QualityMode mode, int max_disparity = 128);
 };

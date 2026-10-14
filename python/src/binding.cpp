@@ -152,7 +152,13 @@ public:
                     int min_disparity,
                     const py::object& backend_arg,
                     const py::object& memory_policy_arg,
-                    size_t max_retained_bytes) {
+                    size_t max_retained_bytes,
+                    bool hierarchical,
+                    int hierarchical_radius,
+                    const py::object& hierarchical_fallback_arg,
+                    bool adaptive_radius,
+                    float confidence_threshold,
+                    int expanded_radius) {
         apg::QualityMode qm = apg::QualityMode::Balanced;
         if (!mode_arg.is_none()) {
             if (py::isinstance<py::str>(mode_arg)) {
@@ -191,6 +197,31 @@ public:
             }
         }
 
+        if (hierarchical) {
+            cfg.hierarchical.enable = true;
+            cfg.hierarchical.radius = hierarchical_radius;
+            cfg.hierarchical.adaptive_radius = adaptive_radius;
+            cfg.hierarchical.confidence_threshold = confidence_threshold;
+            cfg.hierarchical.expanded_radius = expanded_radius;
+            if (!hierarchical_fallback_arg.is_none()) {
+                if (py::isinstance<py::str>(hierarchical_fallback_arg)) {
+                    std::string fb = hierarchical_fallback_arg.cast<std::string>();
+                    std::transform(fb.begin(), fb.end(), fb.begin(), ::tolower);
+                    if (fb == "nearest_valid" || fb == "nearest") {
+                        cfg.hierarchical.fallback = apg::HierarchicalFallback::NearestValid;
+                    } else if (fb == "full_range" || fb == "full") {
+                        cfg.hierarchical.fallback = apg::HierarchicalFallback::FullRange;
+                    } else if (fb == "expanded_radius" || fb == "expanded") {
+                        cfg.hierarchical.fallback = apg::HierarchicalFallback::ExpandedRadius;
+                    } else {
+                        throw py::value_error("Unrecognized hierarchical_fallback '" + fb + "'. Valid: 'nearest_valid', 'full_range', 'expanded_radius'");
+                    }
+                } else {
+                    cfg.hierarchical.fallback = hierarchical_fallback_arg.cast<apg::HierarchicalFallback>();
+                }
+            }
+        }
+
         apg::ExecutionOptions opt;
         opt.memory_policy = apg::MemoryPolicy::ReleasePerFrame; // Default matches P4 C++ engine semantics
 
@@ -211,6 +242,11 @@ public:
         }
         if (max_retained_bytes > 0) {
             opt.max_retained_bytes = max_retained_bytes;
+        }
+
+        apg::Status s_cfg = apg::validate_config(cfg);
+        if (!s_cfg.ok()) {
+            throw std::runtime_error(s_cfg.message);
         }
 
         session_ = std::make_unique<apg::StereoSession>(cfg, opt);
@@ -283,12 +319,35 @@ public:
         return session_->last_error();
     }
 
+    bool hierarchical_enabled() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->config().hierarchical.enable;
+    }
+    int hierarchical_radius() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->config().hierarchical.radius;
+    }
+    bool adaptive_radius() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->config().hierarchical.adaptive_radius;
+    }
+
     std::string repr() {
         std::lock_guard<std::mutex> lock(mutex_);
         std::ostringstream oss;
         oss << "<apg_sgm.StereoSession frames=" << session_->frame_count()
             << " avg_time_ms=" << session_->average_time_ms()
-            << " allocated_bytes=" << session_->allocated_bytes() << ">";
+            << " allocated_bytes=" << session_->allocated_bytes();
+        if (session_->config().hierarchical.enable) {
+            oss << " hierarchical=True (R=" << session_->config().hierarchical.radius;
+            if (session_->config().hierarchical.adaptive_radius) {
+                oss << ", adaptive_R=" << session_->config().hierarchical.expanded_radius
+                    << "@" << std::fixed << std::setprecision(2)
+                    << session_->config().hierarchical.confidence_threshold;
+            }
+            oss << ")";
+        }
+        oss << ">";
         return oss.str();
     }
 
@@ -333,6 +392,13 @@ PYBIND11_MODULE(_core, m) {
         .value("ResourceLimitExceeded", apg::StatusCode::ResourceLimitExceeded)
         .value("AllocationFailure", apg::StatusCode::AllocationFailure)
         .value("InternalError", apg::StatusCode::InternalError)
+        .export_values();
+
+    // HierarchicalFallback Enum
+    py::enum_<apg::HierarchicalFallback>(m, "HierarchicalFallback", "Fallback strategy when coarse disparity is invalid")
+        .value("NearestValid", apg::HierarchicalFallback::NearestValid)
+        .value("FullRange", apg::HierarchicalFallback::FullRange)
+        .value("ExpandedRadius", apg::HierarchicalFallback::ExpandedRadius)
         .export_values();
 
     // StageTiming Struct
@@ -466,7 +532,7 @@ PYBIND11_MODULE(_core, m) {
 
     // StereoSession Class
     py::class_<PyStereoSession>(m, "StereoSession", "Stateful streaming stereo matcher session")
-        .def(py::init<py::object, int, int, int, py::object, py::object, size_t>(),
+        .def(py::init<py::object, int, int, int, py::object, py::object, size_t, bool, int, py::object, bool, float, int>(),
              py::arg("mode") = "balanced",
              py::arg("threads") = 0,
              py::arg("max_disparity") = 128,
@@ -474,7 +540,13 @@ PYBIND11_MODULE(_core, m) {
              py::arg("backend") = "auto",
              py::arg("memory_policy") = "release_per_frame",
              py::arg("max_retained_bytes") = 0,
-             "Initialize StereoSession with algorithm mode, disparity bounds, and execution options.")
+             py::arg("hierarchical") = false,
+             py::arg("hierarchical_radius") = 4,
+             py::arg("hierarchical_fallback") = py::none(),
+             py::arg("adaptive_radius") = false,
+             py::arg("confidence_threshold") = 0.5f,
+             py::arg("expanded_radius") = 8,
+             "Initialize StereoSession with algorithm mode, disparity bounds, execution options, and hierarchical settings.")
         .def("process", &PyStereoSession::process, py::arg("left"), py::arg("right"),
              "Process a pair of left and right images (uint8 ndarrays). Returns StereoResult.")
         .def("compute", &PyStereoSession::process, py::arg("left"), py::arg("right"),
@@ -485,5 +557,8 @@ PYBIND11_MODULE(_core, m) {
         .def_property_readonly("average_time_ms", &PyStereoSession::average_time_ms)
         .def_property_readonly("allocated_bytes", &PyStereoSession::allocated_bytes)
         .def_property_readonly("last_error", &PyStereoSession::last_error)
+        .def_property_readonly("hierarchical_enabled", &PyStereoSession::hierarchical_enabled)
+        .def_property_readonly("hierarchical_radius", &PyStereoSession::hierarchical_radius)
+        .def_property_readonly("adaptive_radius", &PyStereoSession::adaptive_radius)
         .def("__repr__", &PyStereoSession::repr);
 }

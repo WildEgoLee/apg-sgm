@@ -8,12 +8,6 @@
 
 namespace apg {
 
-enum class HierarchicalFallback {
-    FullRange,
-    NearestValid,
-    ExpandedRadius
-};
-
 inline std::string hierarchical_fallback_to_string(HierarchicalFallback f) {
     switch (f) {
         case HierarchicalFallback::FullRange: return "full_range";
@@ -38,15 +32,6 @@ inline bool parse_hierarchical_fallback(const std::string& str, HierarchicalFall
     }
     return false;
 }
-
-struct HierarchicalConfig {
-    bool enable = false;
-    int radius = 8;
-    int scale = 2;
-    HierarchicalFallback fallback = HierarchicalFallback::NearestValid;
-    bool coarse_cross_agg = true;
-    bool coarse_fill_holes = true;
-};
 
 struct HierarchicalTelemetry {
     double avg_states_per_pixel = 0.0;
