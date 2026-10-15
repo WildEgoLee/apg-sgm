@@ -463,6 +463,7 @@ void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
     const float sp_param = ExperimentalSubpixelScope::current_param();
     const bool sp_telem_enabled = ExperimentalSubpixelScope::is_telemetry_enabled();
     const bool is_fast_legacy = (sp_method == SubpixelMethod::Legacy && !sp_telem_enabled);
+    SubpixelTelemetry* caller_telem = sp_telem_enabled ? &ExperimentalSubpixelScope::current_telemetry() : nullptr;
 
 #if defined(_OPENMP)
 #pragma omp parallel
@@ -628,12 +629,12 @@ void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
         }
     }
 
-        if (sp_telem_enabled) {
+        if (caller_telem) {
 #if defined(_OPENMP)
 #pragma omp critical(subpixel_telem_merge)
 #endif
             {
-                ExperimentalSubpixelScope::current_telemetry().merge(local_telem);
+                caller_telem->merge(local_telem);
             }
         }
     }

@@ -124,12 +124,12 @@ Across all 7 evaluated regions, differences between the candidates are numerical
 
 ## 5. Telemetry Diagnostics
 
-Across all 15 Middlebury scenes (averaging ~345k to 420k candidate pixels per frame):
-- **Applied Subpixel Ratio**: **98.14%** in Lane L, **98.27%** in Lane H.
+Across all 15 Middlebury scenes (4,546,114 candidate pixels in Lane L, 5,437,748 candidate pixels in Lane H):
+- **Applied Subpixel Ratio**: **98.20%** in Lane L (4,464,451 px), **98.29%** in Lane H (5,344,826 px).
 - **Degenerate Denominator Count**: **0** occurrences across all scenes on this dataset.
-- **Negative Curvature / Clamped Pixels**: **1.63%** in Lane L, **1.34%** in Lane H.
-- **Mean Absolute Subpixel Shift $|\delta|$**: **0.1805 px** in Lane L, **0.1788 px** in Lane H.
-- **Percentiles**: Median shift (p50) is **0.135 px**; 95th percentile (p95) is **0.445 px**.
+- **Negative Curvature / Clamped Pixels**: **1.63%** in Lane L (72,814 px), **1.36%** in Lane H (72,753 px).
+- **Mean Absolute Subpixel Shift $|\delta|$**: **0.1812 px** in Lane L, **0.1793 px** in Lane H.
+- **Percentiles**: Median shift (p50) is **0.145 px**; 95th percentile (p95) is **0.445 px**.
 
 ---
 
@@ -139,5 +139,9 @@ Across all 15 Middlebury scenes (averaging ~345k to 420k candidate pixels per fr
    `SubpixelEstimator::compute_legacy_delta(cm, c0, cp)` is a `static inline noexcept` function. Production WTA loops evaluate `is_fast_legacy` outside the pixel loop, executing direct formula inlining with zero per-pixel experimental dispatch, zero switch statements, and zero thread-local lookups.
 2. **Internal Experimental Surface**:
    Candidate methods (CurvGate, ConfGate, Stabilized), thresholds, and telemetry collection remain strictly internal to the testing and benchmark harness via `ExperimentalSubpixelScope`, preventing experimental leakage into `PipelineConfig` or public headers.
-3. **Synthetic Test Coverage**:
-   `tests/test_subpixel.cpp` tests 7 distinct synthetic curve profiles (symmetric, left-biased, right-biased, flat, negative curvature, shallow basin, uniqueness thresholding), ensuring mathematically exact parity across all engines.
+3. **OpenMP Telemetry Thread-Safety**:
+   WTA implementations capture the active caller-thread telemetry sink pointer prior to `#pragma omp parallel` loops, aggregate per-worker thread tallies locally, and atomically merge them into the caller sink within an OpenMP critical section upon region exit.
+4. **Test & Parity Coverage**:
+   - `tests/test_subpixel.cpp` tests 7 distinct synthetic curve profiles (symmetric, left-biased, right-biased, flat, negative curvature, shallow basin, uniqueness thresholding), ensuring mathematically exact parity across all engines.
+   - Dual-backend parity verifies bit-exact disparity between Dense and Packed engines under subpixel modes.
+   - Dedicated multithread telemetry consistency test guarantees identical candidate, applied, clamped, and histogram distributions regardless of thread count (`num_threads=1` vs `num_threads=4`).

@@ -232,11 +232,78 @@ static void test_dense_packed_subpixel_parity() {
     std::cout << "[PASS] test_dense_packed_subpixel_parity\n";
 }
 
+static void test_multithread_telemetry_consistency() {
+    std::cout << "Testing multithread telemetry consistency (1 thread vs 4 threads)...\n";
+
+    const int w = 128;
+    const int h = 96;
+    Image8 left(w, h, 1);
+    Image8 right(w, h, 1);
+
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            uint8_t pat = static_cast<uint8_t>((x * 7 + y * 13) % 256);
+            left.at(x, y) = pat;
+            int xr = x - 5;
+            right.at(x, y) = (xr >= 0) ? pat : 0;
+        }
+    }
+
+    const VolumeBackend backends[] = {VolumeBackend::Dense, VolumeBackend::Packed};
+
+    for (auto backend : backends) {
+        PipelineConfig cfg_1 = PipelineConfig::from_mode(QualityMode::Fast, 32);
+        cfg_1.volume_backend = backend;
+        cfg_1.post.subpixel = true;
+        cfg_1.num_threads = 1;
+
+        PipelineConfig cfg_4 = PipelineConfig::from_mode(QualityMode::Fast, 32);
+        cfg_4.volume_backend = backend;
+        cfg_4.post.subpixel = true;
+        cfg_4.num_threads = 4;
+
+        SubpixelTelemetry telem_1;
+        {
+            ExperimentalSubpixelScope scope(SubpixelMethod::Legacy, 0.0f, true);
+            StereoMatcher matcher_1(cfg_1);
+            StereoResult res_1;
+            Status s = matcher_1.compute_status(left, right, res_1);
+            assert(s.ok());
+            telem_1 = ExperimentalSubpixelScope::current_telemetry();
+        }
+
+        SubpixelTelemetry telem_4;
+        {
+            ExperimentalSubpixelScope scope(SubpixelMethod::Legacy, 0.0f, true);
+            StereoMatcher matcher_4(cfg_4);
+            StereoResult res_4;
+            Status s = matcher_4.compute_status(left, right, res_4);
+            assert(s.ok());
+            telem_4 = ExperimentalSubpixelScope::current_telemetry();
+        }
+
+        assert(telem_1.candidate_pixels > 0);
+        assert(telem_1.candidate_pixels == telem_4.candidate_pixels);
+        assert(telem_1.applied_pixels == telem_4.applied_pixels);
+        assert(telem_1.degenerate_count == telem_4.degenerate_count);
+        assert(telem_1.clamped_count == telem_4.clamped_count);
+        assert(telem_1.negative_curvature_count == telem_4.negative_curvature_count);
+        assert(std::abs(telem_1.sum_abs_delta - telem_4.sum_abs_delta) < 1e-4);
+        for (int i = 0; i < 50; ++i) {
+            assert(telem_1.delta_buckets[i] == telem_4.delta_buckets[i]);
+        }
+    }
+
+    std::cout << "[PASS] test_multithread_telemetry_consistency\n";
+}
+
 int main() {
+    std::cout << std::unitbuf;
     test_synthetic_cost_curves();
     test_telemetry_accuracy();
     test_scope_isolation();
     test_dense_packed_subpixel_parity();
+    test_multithread_telemetry_consistency();
     std::cout << "All subpixel refinement tests passed successfully.\n";
     return 0;
 }
