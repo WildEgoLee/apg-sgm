@@ -4,6 +4,7 @@
 #include "apg_sgm/pipeline.hpp"
 #include "apg_sgm/pipeline_stats.hpp"
 #include "hierarchical_stereo.hpp"
+#include "subpixel_estimator.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -140,6 +141,10 @@ int main(int argc, char** argv) {
     bool hierarchical_adaptive = false;
     float hierarchical_confidence_threshold = 0.5f;
     int hierarchical_expanded_radius = 8;
+    apg::SubpixelMethod subpixel_method = apg::SubpixelMethod::Legacy;
+    float subpixel_param = 0.0f;
+    bool subpixel_param_set = false;
+    bool subpixel_telem = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -184,6 +189,18 @@ int main(int argc, char** argv) {
             hierarchical_confidence_threshold = std::stof(argv[++i]);
         } else if (arg == "--hierarchical-expanded-radius" && i + 1 < argc) {
             hierarchical_expanded_radius = std::stoi(argv[++i]);
+        } else if (arg == "--subpixel-method" && i + 1 < argc) {
+            std::string mstr = argv[++i];
+            if (!apg::parse_subpixel_method(mstr, subpixel_method)) {
+                std::cerr << "Error: invalid subpixel method '" << mstr
+                          << "'. Options: legacy, curv_gate, conf_gate, stabilized\n";
+                return 1;
+            }
+        } else if (arg == "--subpixel-param" && i + 1 < argc) {
+            subpixel_param = std::stof(argv[++i]);
+            subpixel_param_set = true;
+        } else if (arg == "--subpixel-telem") {
+            subpixel_telem = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: apg-benchmark [options]\n"
                       << "Options:\n"
@@ -214,11 +231,26 @@ int main(int argc, char** argv) {
                       << "                        Confidence threshold for adaptive radius (default: 0.5)\n"
                       << "  --hierarchical-expanded-radius <N>\n"
                       << "                        Expanded radius for low-confidence pixels (default: 8)\n"
+                      << "  --subpixel-method <legacy|curv_gate|conf_gate|stabilized>\n"
+                      << "                        Subpixel refinement method (default: legacy)\n"
+                      << "  --subpixel-param <float>\n"
+                      << "                        Method-specific parameter (curvature threshold, confidence threshold, or lambda)\n"
+                      << "  --subpixel-telem      Collect and display subpixel diagnostics telemetry\n"
                       << "  --help, -h            Show this help message\n";
             return 0;
         } else {
             std::cerr << "Error: unknown or incomplete argument '" << arg << "'. Use --help for usage.\n";
             return 1;
+        }
+    }
+
+    if (!subpixel_param_set) {
+        if (subpixel_method == apg::SubpixelMethod::CurvGate) {
+            subpixel_param = 4.0f;
+        } else if (subpixel_method == apg::SubpixelMethod::ConfGate) {
+            subpixel_param = 0.05f;
+        } else if (subpixel_method == apg::SubpixelMethod::Stabilized) {
+            subpixel_param = 4.0f;
         }
     }
 
@@ -392,7 +424,10 @@ int main(int argc, char** argv) {
         << "lowtex_pixels,lowtex_valid_est_pixels,lowtex_valid_ratio,lowtex_epe,lowtex_bad05,lowtex_bad10,lowtex_bad20,lowtex_bad30,lowtex_d1,"
         << "hightex_pixels,hightex_valid_est_pixels,hightex_valid_ratio,hightex_epe,hightex_bad05,hightex_bad10,hightex_bad20,hightex_bad30,hightex_d1,"
         << "peak_workspace_bytes,retained_workspace_bytes,"
-        << "avg_states_per_pixel,coarse_valid_ratio,fallback_pixel_ratio,full_range_pixel_ratio\n";
+        << "avg_states_per_pixel,coarse_valid_ratio,fallback_pixel_ratio,full_range_pixel_ratio,"
+        << "subpixel_method,subpixel_param,subpixel_candidate_px,subpixel_applied_px,subpixel_applied_ratio,"
+        << "subpixel_degenerate_count,subpixel_clamped_count,subpixel_clamped_ratio,subpixel_neg_curv_count,"
+        << "subpixel_mean_abs_delta,subpixel_p50_abs_delta,subpixel_p95_abs_delta\n";
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
@@ -454,6 +489,7 @@ int main(int argc, char** argv) {
             apg::PipelineBuffers bufs;
 
             apg::ExperimentalHierarchicalScope hscope(cfg.hierarchical);
+            apg::ExperimentalSubpixelScope sp_scope(subpixel_method, subpixel_param, subpixel_telem);
 
             // Warmup runs
             for (int r = 0; r < warmup_runs; ++r) {
@@ -461,6 +497,10 @@ int main(int argc, char** argv) {
                     std::cerr << "StereoMatcher::compute failed during warmup: " << matcher.last_error() << "\n";
                     return 1;
                 }
+            }
+
+            if (subpixel_telem) {
+                apg::ExperimentalSubpixelScope::current_telemetry().reset();
             }
 
             // Timed runs
@@ -494,6 +534,22 @@ int main(int argc, char** argv) {
                 best_telem.coarse_valid_ratio = 0.0f;
                 best_telem.fallback_pixel_ratio = 0.0f;
                 best_telem.full_range_pixel_ratio = 0.0f;
+            }
+
+            apg::SubpixelTelemetry sp_telem;
+            if (subpixel_telem) {
+                sp_telem = apg::ExperimentalSubpixelScope::current_telemetry();
+                if (repeat_runs > 1) {
+                    sp_telem.candidate_pixels /= repeat_runs;
+                    sp_telem.applied_pixels /= repeat_runs;
+                    sp_telem.degenerate_count /= repeat_runs;
+                    sp_telem.clamped_count /= repeat_runs;
+                    sp_telem.negative_curvature_count /= repeat_runs;
+                    sp_telem.sum_abs_delta /= repeat_runs;
+                    for (int bi = 0; bi < 50; ++bi) {
+                        sp_telem.delta_buckets[bi] /= repeat_runs;
+                    }
+                }
             }
 
             // Evaluate metrics
@@ -549,6 +605,20 @@ int main(int argc, char** argv) {
                           << " | Fallback: " << std::setprecision(1) << (best_telem.fallback_pixel_ratio * 100.f) << "%"
                           << " | FullRange: " << std::setprecision(1) << (best_telem.full_range_pixel_ratio * 100.f) << "%"
                           << " | CoarseTime: " << std::setprecision(2) << best_telem.coarse_time_ms << " ms]\n";
+            }
+
+            if (subpixel_telem) {
+                std::cout << "  [Subpixel " << apg::subpixel_method_to_string(subpixel_method)
+                          << "(param=" << subpixel_param << ")"
+                          << " | Cand: " << sp_telem.candidate_pixels
+                          << " | App: " << sp_telem.applied_pixels << " (" << std::fixed << std::setprecision(1) << (sp_telem.applied_ratio() * 100.0) << "%)"
+                          << " | Clamp: " << sp_telem.clamped_count << " (" << std::setprecision(1) << (sp_telem.clamped_ratio() * 100.0) << "%)"
+                          << " | Degen: " << sp_telem.degenerate_count
+                          << " | NegCurv: " << sp_telem.negative_curvature_count
+                          << " | Mean|d|: " << std::setprecision(3) << sp_telem.mean_abs_delta()
+                          << " | p50: " << std::setprecision(3) << sp_telem.p50_abs_delta()
+                          << " | p95: " << std::setprecision(3) << sp_telem.p95_abs_delta()
+                          << "]\n";
             }
 
             // Output to CSV
@@ -725,7 +795,19 @@ int main(int argc, char** argv) {
                 << best_telem.avg_states_per_pixel << ","
                 << best_telem.coarse_valid_ratio << ","
                 << best_telem.fallback_pixel_ratio << ","
-                << best_telem.full_range_pixel_ratio << "\n";
+                << best_telem.full_range_pixel_ratio << ","
+                << apg::subpixel_method_to_string(subpixel_method) << ","
+                << subpixel_param << ","
+                << sp_telem.candidate_pixels << ","
+                << sp_telem.applied_pixels << ","
+                << sp_telem.applied_ratio() << ","
+                << sp_telem.degenerate_count << ","
+                << sp_telem.clamped_count << ","
+                << sp_telem.clamped_ratio() << ","
+                << sp_telem.negative_curvature_count << ","
+                << sp_telem.mean_abs_delta() << ","
+                << sp_telem.p50_abs_delta() << ","
+                << sp_telem.p95_abs_delta() << "\n";
             csv.flush();
 
             // Save disparity maps if requested
