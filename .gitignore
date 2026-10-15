@@ -12,6 +12,7 @@ cmake-build-*/
 benchmarks/data/
 results/*.csv
 results/hierarchical_study/
+results/p5_5_study/
 !results/.gitkeep
 .DS_Store
 *.pyd

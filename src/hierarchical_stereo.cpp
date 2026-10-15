@@ -1,4 +1,5 @@
 #include "hierarchical_stereo.hpp"
+#include "subpixel_estimator.hpp"
 
 #include "apg_sgm/confidence_estimator.hpp"
 #include "apg_sgm/cost_aggregator.hpp"
@@ -29,6 +30,10 @@ void wta_right_from_packed(const PipelineConfig& cfg, const PackedCostVolume16& 
     const int h = vol.height();
     disp_right = Image32f(w, h, -1.f);
     if (vol.empty() || w <= 0 || h <= 0) return;
+
+    const SubpixelMethod sp_method = ExperimentalSubpixelScope::current_method();
+    const float sp_param = ExperimentalSubpixelScope::current_param();
+    const bool is_fast_legacy = (sp_method == SubpixelMethod::Legacy && !ExperimentalSubpixelScope::is_telemetry_enabled());
 
 #if defined(_OPENMP)
 #pragma omp parallel
@@ -83,14 +88,15 @@ void wta_right_from_packed(const PipelineConfig& cfg, const PackedCostVolume16& 
                             const uint16_t c0 = vol.at(xl_0, y, bd);
                             const uint16_t cp = vol.at(xl_p, y, bd + 1);
                             if (cm != kInvalidCost && c0 != kInvalidCost && cp != kInvalidCost) {
-                                const float fcm = static_cast<float>(cm);
-                                const float fc0 = static_cast<float>(c0);
-                                const float fcp = static_cast<float>(cp);
-                                const float denom = fcm - 2.f * fc0 + fcp;
-                                if (std::abs(denom) > 1e-6f) {
-                                    float delta = 0.5f * (fcm - fcp) / denom;
-                                    delta = clampf(delta, -0.5f, 0.5f);
-                                    dval += delta;
+                                if (is_fast_legacy) {
+                                    dval += SubpixelEstimator::compute_legacy_delta(
+                                        static_cast<float>(cm), static_cast<float>(c0), static_cast<float>(cp)
+                                    );
+                                } else {
+                                    dval += SubpixelEstimator::compute_delta(
+                                        static_cast<float>(cm), static_cast<float>(c0), static_cast<float>(cp),
+                                        sp_method, sp_param
+                                    );
                                 }
                             }
                         }

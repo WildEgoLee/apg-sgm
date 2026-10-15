@@ -1,5 +1,6 @@
 #include "sgm_optimizer_avx2.hpp"
 #include "sgm_common.hpp"
+#include "subpixel_estimator.hpp"
 
 #include <immintrin.h>
 #include <algorithm>
@@ -458,10 +459,22 @@ void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
     if (best_cost) *best_cost = Image32f(w, h, std::numeric_limits<float>::infinity());
     if (second_cost) *second_cost = Image32f(w, h, std::numeric_limits<float>::infinity());
 
+    const SubpixelMethod sp_method = ExperimentalSubpixelScope::current_method();
+    const float sp_param = ExperimentalSubpixelScope::current_param();
+    const bool sp_telem_enabled = ExperimentalSubpixelScope::is_telemetry_enabled();
+    const bool is_fast_legacy = (sp_method == SubpixelMethod::Legacy && !sp_telem_enabled);
+
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic, 4)
+#pragma omp parallel
 #endif
-    for (int y = 0; y < h; ++y) {
+    {
+        SubpixelTelemetry local_telem;
+        SubpixelTelemetry* telem_ptr = sp_telem_enabled ? &local_telem : nullptr;
+
+#if defined(_OPENMP)
+#pragma omp for schedule(dynamic, 4)
+#endif
+        for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const int lo = vol.dmin(x, y);
             const int hi = vol.dmax(x, y);
@@ -586,13 +599,19 @@ void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
                     const TCost c_0 = s[di];
                     const TCost c_p = s[di + 1];
                     if (c_m != inv_c && c_p != inv_c) {
-                        const float cm = static_cast<float>(c_m);
-                        const float c0 = static_cast<float>(c_0);
-                        const float cp = static_cast<float>(c_p);
-                        const float denom = cm - 2.f * c0 + cp;
-                        if (std::abs(denom) > 1e-6f) {
-                            float delta = 0.5f * (cm - cp) / denom;
-                            delta = clampf(delta, -0.5f, 0.5f);
+                        if (is_fast_legacy) {
+                            dval += SubpixelEstimator::compute_legacy_delta(
+                                static_cast<float>(c_m), static_cast<float>(c_0), static_cast<float>(c_p)
+                            );
+                        } else {
+                            float u = 1.0f;
+                            if (second < UINT64_MAX) {
+                                u = static_cast<float>(second - best) / static_cast<float>(std::max<uint64_t>(best, 1));
+                            }
+                            const float delta = SubpixelEstimator::compute_delta(
+                                static_cast<float>(c_m), static_cast<float>(c_0), static_cast<float>(c_p),
+                                sp_method, sp_param, u, telem_ptr
+                            );
                             dval += delta;
                         }
                     }
@@ -605,6 +624,16 @@ void winner_take_all_packed_avx2_impl(const PipelineConfig& cfg,
                 second_cost->at(x, y) = (second < UINT64_MAX)
                     ? static_cast<float>(second)
                     : std::numeric_limits<float>::infinity();
+            }
+        }
+    }
+
+        if (sp_telem_enabled) {
+#if defined(_OPENMP)
+#pragma omp critical(subpixel_telem_merge)
+#endif
+            {
+                ExperimentalSubpixelScope::current_telemetry().merge(local_telem);
             }
         }
     }

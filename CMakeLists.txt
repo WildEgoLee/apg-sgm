@@ -36,6 +36,7 @@ add_library(apg_sgm
     src/metrics.cpp
     src/c_api.cpp
     src/hierarchical_stereo.cpp
+    src/subpixel_estimator.cpp
 )
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -153,6 +154,11 @@ if(APG_SGM_BUILD_TESTS)
     target_include_directories(test_hierarchical PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_hierarchical PRIVATE apg_sgm)
     add_test(NAME hierarchical COMMAND test_hierarchical)
+
+    add_executable(test_subpixel tests/test_subpixel.cpp)
+    target_include_directories(test_subpixel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_subpixel PRIVATE apg_sgm)
+    add_test(NAME subpixel COMMAND test_subpixel)
 
     add_executable(c_api_smoke tests/c_api_smoke.c)
     target_link_libraries(c_api_smoke PRIVATE apg_sgm)
