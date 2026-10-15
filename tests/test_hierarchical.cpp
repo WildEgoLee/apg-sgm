@@ -193,6 +193,14 @@ static void test_hierarchical_validation() {
     PipelineConfig cfg = PipelineConfig::from_mode(QualityMode::Balanced, 32);
     cfg.hierarchical.enable = true;
 
+    // Invalid backend: Dense is incompatible with varying pixel intervals
+    cfg.volume_backend = VolumeBackend::Dense;
+    assert(!validate_config(cfg).ok());
+    cfg.volume_backend = VolumeBackend::Auto;
+    assert(validate_config(cfg).ok());
+    cfg.volume_backend = VolumeBackend::Packed;
+    assert(validate_config(cfg).ok());
+
     // Invalid radius
     cfg.hierarchical.radius = 0;
     assert(!validate_config(cfg).ok());
@@ -200,10 +208,15 @@ static void test_hierarchical_validation() {
     assert(!validate_config(cfg).ok());
     cfg.hierarchical.radius = 4;
 
-    // Invalid scale
+    // Scale must be strictly 2
     cfg.hierarchical.scale = 1;
     assert(!validate_config(cfg).ok());
+    cfg.hierarchical.scale = 3;
+    assert(!validate_config(cfg).ok());
+    cfg.hierarchical.scale = 4;
+    assert(!validate_config(cfg).ok());
     cfg.hierarchical.scale = 2;
+    assert(validate_config(cfg).ok());
 
     // Invalid adaptive config
     cfg.hierarchical.adaptive_radius = true;

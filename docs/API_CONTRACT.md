@@ -85,3 +85,18 @@
    - GIL is released during compute execution (`py::gil_scoped_release`), enabling parallel compute across independent `StereoSession` instances.
 5. **Build Model & CPU Dispatch Invariance**:
    - Built via `scikit-build-core` linking the primary CMake `apg_sgm` target, avoiding global compiler AVX2 flags on generic translation units and preserving the runtime CPU dispatch architecture.
+
+---
+
+## 6. Hierarchical SGM Contract (P5.4)
+
+1. **Compatibility Invariants**:
+   - Default behavioral compatibility and C++ source compatibility preserved: `PipelineConfig::hierarchical.enable` defaults to `false`, leaving canonical baseline execution and all preset quality/performance paths bit-exact.
+2. **Coarse Scale & Search Space**:
+   - Hierarchical mode is currently fixed to **2× coarse scale** (`scale == 2`). Any non-2 scale value is rejected by `validate_config` with `StatusCode::InvalidConfig`.
+3. **Backend Resolution Contract**:
+   - `Auto` + `hierarchical` -> `Packed` (automatic packed volume allocation and execution).
+   - `Packed` + `hierarchical` -> `Packed`.
+   - `Dense` + `hierarchical` -> `StatusCode::InvalidConfig` ("hierarchical mode requires Auto or Packed backend").
+4. **Adaptive Search Radius**:
+   - When `adaptive_radius == true`, search radius expands from `radius` (default 4) to `expanded_radius` (default 8) for pixels with coarse confidence < `confidence_threshold` (default 0.5), recovering challenging disparity in low-confidence regions.

@@ -179,11 +179,14 @@ Status validate_config(const PipelineConfig& cfg) {
         return Status(StatusCode::InvalidConfig, "refine iterations must be non-negative");
     }
     if (cfg.hierarchical.enable) {
+        if (cfg.volume_backend == VolumeBackend::Dense) {
+            return Status(StatusCode::InvalidConfig, "hierarchical mode requires Auto or Packed backend");
+        }
         if (cfg.hierarchical.radius <= 0) {
             return Status(StatusCode::InvalidConfig, "hierarchical radius must be strictly positive");
         }
-        if (cfg.hierarchical.scale < 2) {
-            return Status(StatusCode::InvalidConfig, "hierarchical scale must be at least 2");
+        if (cfg.hierarchical.scale != 2) {
+            return Status(StatusCode::InvalidConfig, "hierarchical scale currently supports only 2");
         }
         if (cfg.hierarchical.adaptive_radius) {
             if (cfg.hierarchical.expanded_radius < cfg.hierarchical.radius) {

@@ -540,3 +540,10 @@ def test_hierarchical_invalid_parameters():
             adaptive_radius=True,
             confidence_threshold=-0.5,
         )
+
+    # Incompatible backend: Dense + Hierarchical rejected
+    with pytest.raises(RuntimeError, match="hierarchical mode requires Auto or Packed backend"):
+        apg.StereoSession(mode="fast", max_disparity=32, backend="dense", hierarchical=True)
+
+    with pytest.raises(RuntimeError, match="hierarchical mode requires Auto or Packed backend"):
+        apg.StereoSession(mode="fast", max_disparity=32, backend=apg.VolumeBackend.Dense, hierarchical=True)
