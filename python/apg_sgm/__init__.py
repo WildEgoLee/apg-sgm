@@ -4,6 +4,7 @@ from __future__ import annotations
 
 try:
     from ._core import (
+        HierarchicalFallback,
         MemoryPolicy,
         PipelineStats,
         QualityMode,
@@ -21,6 +22,7 @@ except ImportError as err:
 
 __version__ = "1.0.0"
 __all__ = [
+    "HierarchicalFallback",
     "MemoryPolicy",
     "PipelineStats",
     "QualityMode",

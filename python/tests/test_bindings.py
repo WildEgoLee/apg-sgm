@@ -449,3 +449,101 @@ def test_metadata_bounds_and_overflow_rejection():
     mismatched = np.zeros((48, 32), dtype=np.uint8)
     with pytest.raises(ValueError, match="Left and right images must have identical dimensions"):
         session.process(left, mismatched)
+
+
+def test_hierarchical_session_lifecycle():
+    """Verify hierarchical session creation, configuration inspection, and string representation."""
+    session = apg.StereoSession(
+        mode="balanced",
+        max_disparity=64,
+        hierarchical=True,
+        hierarchical_radius=4,
+        hierarchical_fallback="nearest_valid",
+    )
+    assert session.hierarchical_enabled is True
+    assert session.hierarchical_radius == 4
+    assert session.adaptive_radius is False
+    assert "hierarchical=True (R=4)" in repr(session)
+
+
+def test_hierarchical_process_and_streaming():
+    """Verify hierarchical execution produces valid results and reuses memory across streaming frames."""
+    session = apg.StereoSession(
+        mode="fast",
+        max_disparity=32,
+        memory_policy="bounded_reuse",
+        hierarchical=True,
+        hierarchical_radius=4,
+    )
+    left, right = make_synthetic_pair(64, 48, disparity_shift=4)
+
+    initial_alloc = 0
+    for frame in range(10):
+        res = session.process(left, right)
+        assert not res.empty
+        assert res.disparity.shape == (48, 64)
+        if frame == 0:
+            initial_alloc = session.allocated_bytes
+            assert initial_alloc > 0
+        else:
+            assert session.allocated_bytes == initial_alloc
+
+    assert session.frame_count == 10
+    session.reset()
+    assert session.allocated_bytes == 0
+
+
+def test_hierarchical_adaptive_radius():
+    """Verify confidence-aware adaptive search radius in hierarchical mode."""
+    session = apg.StereoSession(
+        mode="balanced",
+        max_disparity=32,
+        hierarchical=True,
+        hierarchical_radius=4,
+        adaptive_radius=True,
+        confidence_threshold=0.5,
+        expanded_radius=8,
+    )
+    assert session.hierarchical_enabled is True
+    assert session.adaptive_radius is True
+    assert "adaptive_R=8@0.50" in repr(session)
+
+    left, right = make_synthetic_pair(64, 48, disparity_shift=4)
+    res = session.process(left, right)
+    assert not res.empty
+    assert res.disparity.shape == (48, 64)
+
+
+def test_hierarchical_invalid_parameters():
+    """Verify invalid hierarchical configurations are rejected by C++ validation."""
+    with pytest.raises(RuntimeError, match="hierarchical radius must be strictly positive"):
+        apg.StereoSession(mode="fast", max_disparity=32, hierarchical=True, hierarchical_radius=0)
+
+    with pytest.raises(RuntimeError, match="hierarchical radius must be strictly positive"):
+        apg.StereoSession(mode="fast", max_disparity=32, hierarchical=True, hierarchical_radius=-2)
+
+    with pytest.raises(RuntimeError, match="expanded_radius cannot be less than radius"):
+        apg.StereoSession(
+            mode="fast",
+            max_disparity=32,
+            hierarchical=True,
+            hierarchical_radius=4,
+            adaptive_radius=True,
+            expanded_radius=2,
+        )
+
+    with pytest.raises(RuntimeError, match="confidence_threshold must be between"):
+        apg.StereoSession(
+            mode="fast",
+            max_disparity=32,
+            hierarchical=True,
+            adaptive_radius=True,
+            confidence_threshold=-0.5,
+        )
+
+    # Incompatible backend: Dense + Hierarchical rejected
+    with pytest.raises(RuntimeError, match="hierarchical mode requires Auto or Packed backend"):
+        apg.StereoSession(mode="fast", max_disparity=32, backend="dense", hierarchical=True)
+
+    with pytest.raises(RuntimeError, match="hierarchical mode requires Auto or Packed backend"):
+        apg.StereoSession(mode="fast", max_disparity=32, backend=apg.VolumeBackend.Dense, hierarchical=True)

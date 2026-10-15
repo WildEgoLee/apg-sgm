@@ -319,9 +319,17 @@ bool HierarchicalStereo::estimate_search_range(
                 const float D_min = 2.0f * min_d;
                 const float D_max = 2.0f * max_d;
 
-                int lo = std::min(static_cast<int>(std::floor(D_center)) - R,
+                int eff_radius = R;
+                if (hcfg.adaptive_radius && !cbuf.confidence.empty()) {
+                    const float c_val = cbuf.confidence.at(xc, yc);
+                    if (c_val < hcfg.confidence_threshold) {
+                        eff_radius = hcfg.expanded_radius;
+                    }
+                }
+
+                int lo = std::min(static_cast<int>(std::floor(D_center)) - eff_radius,
                                   static_cast<int>(std::floor(D_min)) - 1);
-                int hi = std::max(static_cast<int>(std::ceil(D_center)) + R + 1,
+                int hi = std::max(static_cast<int>(std::ceil(D_center)) + eff_radius + 1,
                                   static_cast<int>(std::ceil(D_max)) + 2);
 
                 lo = std::max(lo, glo);

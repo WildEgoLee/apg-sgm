@@ -137,6 +137,9 @@ int main(int argc, char** argv) {
     apg::HierarchicalFallback hierarchical_fallback = apg::HierarchicalFallback::NearestValid;
     bool hierarchical_coarse_cross = true;
     bool hierarchical_coarse_fill = true;
+    bool hierarchical_adaptive = false;
+    float hierarchical_confidence_threshold = 0.5f;
+    int hierarchical_expanded_radius = 8;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -175,6 +178,12 @@ int main(int argc, char** argv) {
             hierarchical_coarse_cross = false;
         } else if (arg == "--hierarchical-no-fill") {
             hierarchical_coarse_fill = false;
+        } else if (arg == "--hierarchical-adaptive") {
+            hierarchical_adaptive = true;
+        } else if (arg == "--hierarchical-confidence-threshold" && i + 1 < argc) {
+            hierarchical_confidence_threshold = std::stof(argv[++i]);
+        } else if (arg == "--hierarchical-expanded-radius" && i + 1 < argc) {
+            hierarchical_expanded_radius = std::stoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: apg-benchmark [options]\n"
                       << "Options:\n"
@@ -199,6 +208,12 @@ int main(int argc, char** argv) {
                       << "                        Disable cross-aggregation at coarse level\n"
                       << "  --hierarchical-no-fill\n"
                       << "                        Disable hole filling at coarse level\n"
+                      << "  --hierarchical-adaptive\n"
+                      << "                        Enable confidence-aware adaptive search radius\n"
+                      << "  --hierarchical-confidence-threshold <float>\n"
+                      << "                        Confidence threshold for adaptive radius (default: 0.5)\n"
+                      << "  --hierarchical-expanded-radius <N>\n"
+                      << "                        Expanded radius for low-confidence pixels (default: 8)\n"
                       << "  --help, -h            Show this help message\n";
             return 0;
         } else {
@@ -419,6 +434,17 @@ int main(int argc, char** argv) {
                 cfg.num_threads = num_threads;
             }
 
+            if (hierarchical_enable) {
+                cfg.hierarchical.enable = true;
+                cfg.hierarchical.radius = hierarchical_radius;
+                cfg.hierarchical.fallback = hierarchical_fallback;
+                cfg.hierarchical.coarse_cross_agg = hierarchical_coarse_cross;
+                cfg.hierarchical.coarse_fill_holes = hierarchical_coarse_fill;
+                cfg.hierarchical.adaptive_radius = hierarchical_adaptive;
+                cfg.hierarchical.confidence_threshold = hierarchical_confidence_threshold;
+                cfg.hierarchical.expanded_radius = hierarchical_expanded_radius;
+            }
+
             const bool use_packed = cfg.resolves_to_packed();
             const std::string backend_str = use_packed ? "packed" : "dense";
 
@@ -427,13 +453,7 @@ int main(int argc, char** argv) {
             // Reused O(1) buffer across runs
             apg::PipelineBuffers bufs;
 
-            apg::HierarchicalConfig hcfg;
-            hcfg.enable = hierarchical_enable;
-            hcfg.radius = hierarchical_radius;
-            hcfg.fallback = hierarchical_fallback;
-            hcfg.coarse_cross_agg = hierarchical_coarse_cross;
-            hcfg.coarse_fill_holes = hierarchical_coarse_fill;
-            apg::ExperimentalHierarchicalScope hscope(hcfg);
+            apg::ExperimentalHierarchicalScope hscope(cfg.hierarchical);
 
             // Warmup runs
             for (int r = 0; r < warmup_runs; ++r) {

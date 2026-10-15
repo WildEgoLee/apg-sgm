@@ -178,6 +178,25 @@ Status validate_config(const PipelineConfig& cfg) {
     if (cfg.refine.enable && cfg.refine.iterations < 0) {
         return Status(StatusCode::InvalidConfig, "refine iterations must be non-negative");
     }
+    if (cfg.hierarchical.enable) {
+        if (cfg.volume_backend == VolumeBackend::Dense) {
+            return Status(StatusCode::InvalidConfig, "hierarchical mode requires Auto or Packed backend");
+        }
+        if (cfg.hierarchical.radius <= 0) {
+            return Status(StatusCode::InvalidConfig, "hierarchical radius must be strictly positive");
+        }
+        if (cfg.hierarchical.scale != 2) {
+            return Status(StatusCode::InvalidConfig, "hierarchical scale currently supports only 2");
+        }
+        if (cfg.hierarchical.adaptive_radius) {
+            if (cfg.hierarchical.expanded_radius < cfg.hierarchical.radius) {
+                return Status(StatusCode::InvalidConfig, "hierarchical expanded_radius cannot be less than radius");
+            }
+            if (cfg.hierarchical.confidence_threshold < 0.0f || cfg.hierarchical.confidence_threshold > 1.0f) {
+                return Status(StatusCode::InvalidConfig, "hierarchical confidence_threshold must be between 0.0 and 1.0");
+            }
+        }
+    }
     return Status::Ok();
 }
 
@@ -449,9 +468,15 @@ Status StereoMatcher::compute_impl(const ImageView8& left, const ImageView8& rig
     cost.compute_aux(left, right, cfg_, out);
     sample_workspace();
     const auto t1 = time_now();
+    const bool use_hierarchical = cfg_.hierarchical.enable || ExperimentalHierarchicalScope::is_enabled();
+    HierarchicalConfig active_hcfg = cfg_.hierarchical;
     if (ExperimentalHierarchicalScope::is_enabled()) {
+        active_hcfg = ExperimentalHierarchicalScope::current_config();
+    }
+
+    if (use_hierarchical) {
         HierarchicalStereo::estimate_search_range(
-            ExperimentalHierarchicalScope::current_config(),
+            active_hcfg,
             cfg_, out,
             &ExperimentalHierarchicalScope::current_telemetry(),
             sample_workspace_extra,
