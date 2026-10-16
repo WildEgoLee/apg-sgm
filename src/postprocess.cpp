@@ -167,7 +167,7 @@ void PostProcessor::fill_holes(const PipelineConfig& cfg, PipelineBuffers& buf) 
                     continue;
                 }
 
-                // Candidate B & C: Disparity-Order-Aware & Shadow-Reclass
+                // Candidate C: Shadow-aware mismatch fill
                 const bool is_occ = (reason == InvalidReason::Occlusion);
                 const bool is_shadow_step = (method == InpaintMethod::ShadowReclass &&
                                              reason == InvalidReason::Mismatch &&

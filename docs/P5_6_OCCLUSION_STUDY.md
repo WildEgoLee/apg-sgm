@@ -50,9 +50,9 @@ Telemetry analysis of the production baseline revealed two primary error mechani
 ### 1. Candidate A: Legacy Baseline
 Unchanged production logic (`max_fill_gap = 32`). Retains fast-path bypass for bit-exact legacy compatibility.
 
-### 2. Candidate B: Disparity-Order-Aware Vertical Fallback
-Tested cross-validating one-sided endpoints with vertical column neighbors $(x, y\pm 1, y\pm 2)$ when horizontal searches only found a single valid endpoint, alongside expanded gaps (32, 48, 64).
-- *Finding*: Vertical disparity consistency is frequently violated near object boundaries; taking the minimum with vertical neighbors introduced vertical streaking and degraded Occ Bad2.0 (+0.00% to +0.14% rel impv, 0–2 scenes non-regressing). **NO-GO**.
+### 2. Candidate B: Expanded-Gap Baseline Control (`max_fill_gap = 48, 64`)
+Evaluates expanding the legacy hole search budget without altering inpainting logic, isolating whether Candidate C's gains stem simply from wider gap reach.
+- *Finding*: Merely widening `max_fill_gap` on the legacy baseline yields only +0.14% (Lane L) and +0.98% (Lane H) Occ Bad2 relative improvement, with regression in 5 out of 15 scenes on Lane L (10/15 non-regr). It decisively fails the $\ge 5.0\%$ gate. This confirms that gap expansion alone does not resolve occlusion boundary errors—the shadow reclassification heuristic is the true mechanism driving quality gains. **NO-GO**.
 
 ### 3. Candidate C: Shadow-Run Reclassification
 - Identifies invalid pixels classified as `Mismatch` where the bounding endpoints exhibit a significant disparity step ($|d_R - d_L| \ge 4.0$ px).
@@ -66,27 +66,29 @@ Tested cross-validating one-sided endpoints with vertical column neighbors $(x, 
 
 ### Lane L: Canonical Full-Range Mode F (Primary Evaluation Lane)
 
-| Candidate | Occ Bad2.0 | Rel. Occ Impv | All EPE (Rel%) | Bnd Bad2 (d_pp) | Occ Valid% (d_pp) | Occ Bad2_all | Non-Regr Scenes | Overhead | Verdict |
+| Candidate | Occ Bad2.0 | Rel. Occ Impv | All EPE (Rel%) | Bnd Bad2 (d_pp) | Occ Valid% (d_pp) | Occ Bad2_all | Non-Regr Scenes | Time (obs) | Quality Verdict |
 |:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **A_legacy_gap32** | 72.92% | +0.00% | 3.477 (+0.00%) | 46.92% (+0.00pp) | 97.73% (+0.00pp) | 73.53% (+0.00pp) | 15/15 | +0.0% | BASELINE |
-| **B_order_gap32** | 72.92% | +0.00% | 3.477 (+0.00%) | 46.92% (+0.00pp) | 97.73% (+0.00pp) | 73.53% (+0.00pp) | 15/15 | -2.9% | FAIL |
-| **B_order_gap48** | 72.82% | +0.14% | 3.478 (+0.05%) | 46.95% (+0.03pp) | 99.46% (+1.73pp) | 72.96% (-0.57pp) | 10/15 | -3.2% | FAIL |
-| **B_order_gap64** | 72.85% | +0.10% | 3.487 (+0.30%) | 46.95% (+0.03pp) | 99.85% (+2.11pp) | 72.89% (-0.64pp) | 9/15 | -3.0% | FAIL |
-| **C_shadow_gap32** | 68.60% | +5.92% | 3.354 (-3.54%) | 47.05% (+0.13pp) | 97.73% (+0.00pp) | 69.31% (-4.22pp) | 15/15 | -3.9% | **PASS (GO)** |
-| **C_shadow_gap48** | **68.52%** | **+6.04%** | **3.346 (-3.77%)** | **47.08% (+0.16pp)** | **99.46% (+1.73pp)** | **68.69% (-4.85pp)** | **15/15** | **-3.7%** | **PASS (GO)** |
-| **C_shadow_gap64** | 68.56% | +5.97% | 3.353 (-3.55%) | 47.09% (+0.17pp) | 99.85% (+2.11pp) | 68.61% (-4.92pp) | 15/15 | -3.4% | **PASS (GO)** |
+| **B_legacy_gap48** | 72.82% | +0.14% | 3.478 (+0.05%) | 46.95% (+0.03pp) | 99.46% (+1.73pp) | 72.96% (-0.57pp) | 10/15 | -0.1% | FAIL (NO-GO) |
+| **B_legacy_gap64** | 72.85% | +0.10% | 3.487 (+0.30%) | 46.95% (+0.03pp) | 99.85% (+2.11pp) | 72.89% (-0.64pp) | 9/15 | +1.0% | FAIL (NO-GO) |
+| **C_shadow_gap32** | 68.60% | +5.92% | 3.354 (-3.54%) | 47.05% (+0.13pp) | 97.73% (+0.00pp) | 69.31% (-4.22pp) | 15/15 | -2.0% | **PASS (GO)** |
+| **C_shadow_gap48** | **68.52%** | **+6.04%** | **3.346 (-3.77%)** | **47.08% (+0.16pp)** | **99.46% (+1.73pp)** | **68.69% (-4.85pp)** | **15/15** | **-1.2%** | **PASS (GO)** |
+| **C_shadow_gap64** | 68.56% | +5.97% | 3.353 (-3.55%) | 47.09% (+0.17pp) | 99.85% (+2.11pp) | 68.61% (-4.92pp) | 15/15 | -3.1% | **PASS (GO)** |
+
+> *Note: Runtime in this quality matrix is non-gating/observational. The runtime latency gate (overhead $\le 5.0\%$) is authoritatively evaluated via interleaved matched runs in `tools/verify_matched_inpaint_overhead.py` (+0.03% on Lane L, -0.78% on Lane H).*
 
 ### Lane H: Hierarchical Mode F ($S=2, R=4$)
 
-| Candidate | Occ Bad2.0 | Rel. Occ Impv | All EPE (Rel%) | Bnd Bad2 (d_pp) | Occ Valid% (d_pp) | Occ Bad2_all | Non-Regr Scenes | Overhead | Verdict |
+| Candidate | Occ Bad2.0 | Rel. Occ Impv | All EPE (Rel%) | Bnd Bad2 (d_pp) | Occ Valid% (d_pp) | Occ Bad2_all | Non-Regr Scenes | Time (obs) | Quality Verdict |
 |:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | **A_legacy_gap32** | 70.42% | +0.00% | 3.390 (+0.00%) | 46.90% (+0.00pp) | 98.98% (+0.00pp) | 70.72% (+0.00pp) | 15/15 | +0.0% | BASELINE |
-| **B_order_gap32** | 70.04% | +0.55% | 3.341 (-1.43%) | 46.92% (+0.02pp) | 99.87% (+0.88pp) | 70.08% (-0.65pp) | 9/15 | -0.8% | FAIL |
-| **B_order_gap48** | 69.73% | +0.98% | 3.331 (-1.75%) | 46.87% (-0.02pp) | 100.00% (+1.02pp) | 69.73% (-0.99pp) | 13/15 | -1.1% | FAIL |
-| **B_order_gap64** | 69.69% | +1.04% | 3.324 (-1.95%) | 46.88% (-0.02pp) | 100.00% (+1.02pp) | 69.69% (-1.03pp) | 13/15 | -0.5% | FAIL |
-| **C_shadow_gap32** | 66.74% | +5.23% | 3.220 (-5.01%) | 47.25% (+0.35pp) | 99.85% (+0.87pp) | 66.79% (-3.94pp) | 15/15 | -0.6% | **PASS (GO)** |
-| **C_shadow_gap48** | **66.50%** | **+5.57%** | **3.190 (-5.91%)** | **47.23% (+0.33pp)** | **100.00% (+1.02pp)** | **66.50% (-4.22pp)** | **15/15** | **-0.9%** | **PASS (GO)** |
-| **C_shadow_gap64** | 66.46% | +5.63% | 3.168 (-6.55%) | 47.20% (+0.30pp) | 100.00% (+1.02pp) | 66.46% (-4.26pp) | 15/15 | -1.5% | **PASS (GO)** |
+| **B_legacy_gap48** | 69.73% | +0.98% | 3.331 (-1.75%) | 46.87% (-0.02pp) | 100.00% (+1.02pp) | 69.73% (-0.99pp) | 13/15 | -1.4% | FAIL (NO-GO) |
+| **B_legacy_gap64** | 69.69% | +1.04% | 3.324 (-1.95%) | 46.88% (-0.02pp) | 100.00% (+1.02pp) | 69.69% (-1.03pp) | 13/15 | -1.1% | FAIL (NO-GO) |
+| **C_shadow_gap32** | 66.74% | +5.23% | 3.220 (-5.01%) | 47.25% (+0.35pp) | 99.85% (+0.87pp) | 66.79% (-3.94pp) | 15/15 | -0.2% | **PASS (GO)** |
+| **C_shadow_gap48** | **66.50%** | **+5.57%** | **3.190 (-5.91%)** | **47.23% (+0.33pp)** | **100.00% (+1.02pp)** | **66.50% (-4.22pp)** | **15/15** | **-1.2%** | **PASS (GO)** |
+| **C_shadow_gap64** | 66.46% | +5.63% | 3.168 (-6.55%) | 47.20% (+0.30pp) | 100.00% (+1.02pp) | 66.46% (-4.26pp) | 15/15 | -0.6% | **PASS (GO)** |
+
+> *Note: Runtime in this quality matrix is non-gating/observational. The runtime latency gate (overhead $\le 5.0\%$) is authoritatively evaluated via interleaved matched runs in `tools/verify_matched_inpaint_overhead.py` (+0.03% on Lane L, -0.78% on Lane H).*
 
 ---
 

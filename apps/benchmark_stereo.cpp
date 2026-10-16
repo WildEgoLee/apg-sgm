@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
             std::string mstr = argv[++i];
             if (!apg::parse_inpaint_method(mstr, inpaint_method)) {
                 std::cerr << "Error: invalid inpaint method '" << mstr
-                          << "'. Options: legacy, disparity_order, shadow_reclass, edge_aware\n";
+                          << "'. Options: legacy, shadow_reclass\n";
                 return 1;
             }
         } else if (arg == "--inpaint-gap" && i + 1 < argc) {
@@ -251,7 +251,7 @@ int main(int argc, char** argv) {
                       << "  --subpixel-param <float>\n"
                       << "                        Method-specific parameter (curvature threshold, confidence threshold, or lambda)\n"
                       << "  --subpixel-telem      Collect and display subpixel diagnostics telemetry\n"
-                      << "  --inpaint-method <legacy|disparity_order|shadow_reclass|edge_aware>\n"
+                      << "  --inpaint-method <legacy|shadow_reclass>\n"
                       << "                        Inpainting / hole filling method (default: legacy)\n"
                       << "  --inpaint-gap <N>     Maximum gap distance for hole search (default: 32)\n"
                       << "  --inpaint-telem       Collect and display inpainting attribution telemetry\n"
@@ -879,11 +879,11 @@ int main(int argc, char** argv) {
                 << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccBothMin)] << ","
                 << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccLeftOnly)] << ","
                 << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccRightOnly)] << ","
-                << (ip_telem.classified_occ_pixels > (ip_telem.route_counts[1]+ip_telem.route_counts[2]+ip_telem.route_counts[3]) ? ip_telem.classified_occ_pixels - (ip_telem.route_counts[1]+ip_telem.route_counts[2]+ip_telem.route_counts[3]) : 0) << ","
+                << ip_telem.occ_unfilled_pixels() << ","
                 << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::MismatchLerp)] << ","
                 << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::MismatchLeftOnly)] << ","
                 << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::MismatchRightOnly)] << ","
-                << (ip_telem.classified_mismatch_pixels > (ip_telem.route_counts[4]+ip_telem.route_counts[5]+ip_telem.route_counts[6]+ip_telem.route_counts[7]+ip_telem.route_counts[8]+ip_telem.route_counts[9]) ? ip_telem.classified_mismatch_pixels - (ip_telem.route_counts[4]+ip_telem.route_counts[5]+ip_telem.route_counts[6]+ip_telem.route_counts[7]+ip_telem.route_counts[8]+ip_telem.route_counts[9]) : 0) << ","
+                << ip_telem.mismatch_unfilled_pixels() << ","
                 << ip_telem.reclassified_shadow_pixels << ","
                 << ip_telem.hit_max_gap_pixels << "\n";
             csv.flush();

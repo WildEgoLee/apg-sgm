@@ -91,8 +91,8 @@ static void test_slanted_plane_preservation() {
     cfg.post.max_fill_gap = 32;
     PostProcessor post;
 
-    {
-        ExperimentalInpaintScope scope(InpaintMethod::DisparityOrder, 32, true);
+    for (auto method : {InpaintMethod::Legacy, InpaintMethod::ShadowReclass}) {
+        ExperimentalInpaintScope scope(method, 32, true);
         PipelineBuffers test_buf = buf;
         post.fill_holes(cfg, test_buf);
 
@@ -247,6 +247,67 @@ static void test_shadow_reclass_logic() {
     std::cout << "[PASS] test_shadow_reclass_logic\n";
 }
 
+static void test_mismatch_unfilled_telemetry_accounting() {
+    std::cout << "Testing mismatch unfilled telemetry accounting...\n";
+
+    // Setup an image with 26 mismatch holes:
+    // 10 holes are in a shadow step (|dr - dl| = 30 >= 4.0), reclassified and filled.
+    // 5 holes are in a smooth region and filled via lerp.
+    // 11 holes exceed max_fill_gap=8 and remain unfilled!
+    const int w = 64;
+    const int h = 1;
+    PipelineBuffers buf;
+    buf.disparity = Image32f(w, h, 10.0f);
+    buf.invalid_reason = Image8u1(w, h, static_cast<uint8_t>(InvalidReason::Valid));
+    buf.left_gray = Image8(w, h, 1);
+
+    // [10, 19]: 10 holes between x=9 (d=10) and x=20 (d=40) -> shadow step -> reclassified and filled
+    buf.disparity.at(9, 0) = 10.0f;
+    for (int x = 10; x <= 19; ++x) {
+        buf.disparity.at(x, 0) = -1.0f;
+        buf.invalid_reason.at(x, 0) = static_cast<uint8_t>(InvalidReason::Mismatch);
+    }
+    buf.disparity.at(20, 0) = 40.0f;
+
+    // [25, 29]: 5 holes between x=24 (d=40) and x=30 (d=41) -> smooth -> filled via lerp
+    buf.disparity.at(24, 0) = 40.0f;
+    for (int x = 25; x <= 29; ++x) {
+        buf.disparity.at(x, 0) = -1.0f;
+        buf.invalid_reason.at(x, 0) = static_cast<uint8_t>(InvalidReason::Mismatch);
+    }
+    buf.disparity.at(30, 0) = 41.0f;
+
+    // [40, 50]: 11 holes between x=39 (d=41) and x=51 (d=41) with gap=8 -> gap exceeded -> remain unfilled
+    buf.disparity.at(39, 0) = 41.0f;
+    for (int x = 40; x <= 50; ++x) {
+        buf.disparity.at(x, 0) = -1.0f;
+        buf.invalid_reason.at(x, 0) = static_cast<uint8_t>(InvalidReason::Mismatch);
+    }
+    buf.disparity.at(51, 0) = 41.0f;
+
+    PipelineConfig cfg;
+    cfg.post.max_fill_gap = 8;
+    PostProcessor post;
+
+    {
+        ExperimentalInpaintScope scope(InpaintMethod::ShadowReclass, 8, true);
+        PipelineBuffers test_buf = buf;
+        post.fill_holes(cfg, test_buf);
+
+        InpaintTelemetry telem = ExperimentalInpaintScope::current_telemetry();
+        assert(telem.classified_mismatch_pixels == 26);
+        assert(telem.reclassified_shadow_pixels == 10);
+        assert(telem.route_counts[static_cast<size_t>(FillRoute::MismatchLerp)] == 5);
+        // Total filled mismatch = 10 (shadow) + 5 (lerp) = 15
+        assert(telem.mismatch_filled_pixels() == 15);
+        // Unfilled mismatch = 26 - 15 = 11
+        assert(telem.mismatch_unfilled_pixels() == 11);
+        assert(telem.route_counts[static_cast<size_t>(FillRoute::RemainedInvalid)] == 11);
+    }
+
+    std::cout << "[PASS] test_mismatch_unfilled_telemetry_accounting\n";
+}
+
 static void test_candidate_c_multithread_parity() {
     std::cout << "Testing Candidate C multithread disparity parity (1-thread vs 4-threads)...\n";
 
@@ -315,6 +376,7 @@ int main() {
     test_slanted_plane_preservation();
     test_multithread_inpaint_consistency();
     test_shadow_reclass_logic();
+    test_mismatch_unfilled_telemetry_accounting();
     test_candidate_c_multithread_parity();
     std::cout << "All inpainting and occlusion refinement unit tests passed successfully.\n";
     return 0;

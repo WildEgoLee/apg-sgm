@@ -8,18 +8,14 @@
 namespace apg {
 
 enum class InpaintMethod {
-    Legacy,          // A: Production baseline (100% bit-exact, fast-path)
-    DisparityOrder,  // B: Disparity-order-aware one-sided fallback + adaptive gap
-    ShadowReclass,   // C: Occlusion-run / Mismatch reinterpretation in shadow
-    EdgeAware        // D: Color/edge-guided background selection
+    Legacy,          // Production baseline (100% bit-exact, fast-path)
+    ShadowReclass    // Winning P5.6 candidate: Shadow-aware mismatch fill with depth step threshold
 };
 
 inline std::string inpaint_method_to_string(InpaintMethod m) {
     switch (m) {
         case InpaintMethod::Legacy: return "legacy";
-        case InpaintMethod::DisparityOrder: return "disparity_order";
         case InpaintMethod::ShadowReclass: return "shadow_reclass";
-        case InpaintMethod::EdgeAware: return "edge_aware";
     }
     return "unknown";
 }
@@ -29,16 +25,8 @@ inline bool parse_inpaint_method(const std::string& str, InpaintMethod& out) {
         out = InpaintMethod::Legacy;
         return true;
     }
-    if (str == "disparity_order" || str == "order" || str == "B" || str == "b") {
-        out = InpaintMethod::DisparityOrder;
-        return true;
-    }
     if (str == "shadow_reclass" || str == "shadow" || str == "C" || str == "c") {
         out = InpaintMethod::ShadowReclass;
-        return true;
-    }
-    if (str == "edge_aware" || str == "edge" || str == "D" || str == "d") {
-        out = InpaintMethod::EdgeAware;
         return true;
     }
     return false;
@@ -141,6 +129,38 @@ struct InpaintTelemetry {
 
     double fill_ratio() const {
         return total_invalid_pixels > 0 ? static_cast<double>(total_filled_pixels()) / total_invalid_pixels : 0.0;
+    }
+
+    uint64_t occ_filled_pixels() const {
+        return route_counts[static_cast<size_t>(FillRoute::OccBothMin)]
+             + route_counts[static_cast<size_t>(FillRoute::OccLeftOnly)]
+             + route_counts[static_cast<size_t>(FillRoute::OccRightOnly)];
+    }
+
+    uint64_t occ_unfilled_pixels() const {
+        // Native occ pixels that remained unfilled
+        return (classified_occ_pixels + reclassified_shadow_pixels > occ_filled_pixels())
+             ? ((classified_occ_pixels + reclassified_shadow_pixels) - occ_filled_pixels()) : 0;
+    }
+
+    uint64_t mismatch_native_filled_pixels() const {
+        return route_counts[static_cast<size_t>(FillRoute::MismatchColorHoriz)]
+             + route_counts[static_cast<size_t>(FillRoute::MismatchColorVert)]
+             + route_counts[static_cast<size_t>(FillRoute::MismatchPrior)]
+             + route_counts[static_cast<size_t>(FillRoute::MismatchLerp)]
+             + route_counts[static_cast<size_t>(FillRoute::MismatchLeftOnly)]
+             + route_counts[static_cast<size_t>(FillRoute::MismatchRightOnly)];
+    }
+
+    uint64_t mismatch_filled_pixels() const {
+        // Includes shadow-reclassified pixels, which were originally classified as Mismatch
+        return mismatch_native_filled_pixels() + reclassified_shadow_pixels;
+    }
+
+    uint64_t mismatch_unfilled_pixels() const {
+        // Mismatch holes that remained unfilled: must exclude reclassified shadow pixels that were successfully filled
+        const uint64_t filled = mismatch_filled_pixels();
+        return (classified_mismatch_pixels > filled) ? (classified_mismatch_pixels - filled) : 0;
     }
 };
 
