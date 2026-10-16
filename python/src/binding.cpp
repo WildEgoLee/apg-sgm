@@ -159,7 +159,6 @@ public:
                     bool adaptive_radius,
                     float confidence_threshold,
                     int expanded_radius,
-                    const py::object& shadow_reclass_arg,
                     int inpaint_gap) {
         apg::QualityMode qm = apg::QualityMode::Balanced;
         if (!mode_arg.is_none()) {
@@ -225,9 +224,6 @@ public:
             }
         }
 
-        if (!shadow_reclass_arg.is_none()) {
-            cfg.post.shadow_reclass = shadow_reclass_arg.cast<bool>();
-        }
         if (inpaint_gap > 0) {
             cfg.post.max_fill_gap = inpaint_gap;
         }
@@ -343,7 +339,7 @@ public:
     }
     bool shadow_reclass_enabled() {
         std::lock_guard<std::mutex> lock(mutex_);
-        return session_->config().post.shadow_reclass;
+        return session_->config().mode == apg::QualityMode::QualityV2;
     }
     int max_fill_gap() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -365,7 +361,7 @@ public:
             }
             oss << ")";
         }
-        if (session_->config().post.shadow_reclass) {
+        if (session_->config().mode == apg::QualityMode::QualityV2) {
             oss << " shadow_reclass=True (gap=" << session_->config().post.max_fill_gap << ")";
         }
         oss << ">";
@@ -554,7 +550,7 @@ PYBIND11_MODULE(_core, m) {
 
     // StereoSession Class
     py::class_<PyStereoSession>(m, "StereoSession", "Stateful streaming stereo matcher session")
-        .def(py::init<py::object, int, int, int, py::object, py::object, size_t, bool, int, py::object, bool, float, int, py::object, int>(),
+        .def(py::init<py::object, int, int, int, py::object, py::object, size_t, bool, int, py::object, bool, float, int, int>(),
              py::arg("mode") = "balanced",
              py::arg("threads") = 0,
              py::arg("max_disparity") = 128,
@@ -568,7 +564,6 @@ PYBIND11_MODULE(_core, m) {
              py::arg("adaptive_radius") = false,
              py::arg("confidence_threshold") = 0.5f,
              py::arg("expanded_radius") = 8,
-             py::arg("shadow_reclass") = py::none(),
              py::arg("inpaint_gap") = 0,
              "Initialize StereoSession with algorithm mode, disparity bounds, execution options, hierarchical, and inpaint settings.")
         .def("process", &PyStereoSession::process, py::arg("left"), py::arg("right"),

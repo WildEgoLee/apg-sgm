@@ -69,9 +69,9 @@ def test_quality_v2_configuration():
     assert not res.empty
     assert res.disparity.shape == (48, 64)
 
-    # Test explicit override of inpaint parameters
-    custom_session = apg.StereoSession(mode="balanced", shadow_reclass=True, inpaint_gap=64)
-    assert custom_session.shadow_reclass_enabled is True
+    # Test explicit override of inpaint gap parameter
+    custom_session = apg.StereoSession(mode="balanced", inpaint_gap=64)
+    assert custom_session.shadow_reclass_enabled is False
     assert custom_session.max_fill_gap == 64
 
 

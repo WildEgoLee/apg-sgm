@@ -45,7 +45,7 @@ void PostProcessor::fill_holes(const PipelineConfig& cfg, PipelineBuffers& buf) 
     const bool scope_active = ExperimentalInpaintScope::is_active();
     const InpaintMethod method = scope_active
         ? ExperimentalInpaintScope::current_method()
-        : (cfg.post.shadow_reclass ? InpaintMethod::ShadowReclass : InpaintMethod::Legacy);
+        : ((cfg.mode == QualityMode::QualityV2) ? InpaintMethod::ShadowReclass : InpaintMethod::Legacy);
     const bool telem_enabled = scope_active && ExperimentalInpaintScope::is_telemetry_enabled();
     const int max_gap = scope_active
         ? ExperimentalInpaintScope::current_max_gap()

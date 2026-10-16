@@ -385,10 +385,9 @@ static void test_quality_v2_preset_and_native_inpaint() {
     assert(cfg.post.subpixel == true);
     assert(cfg.post.lr_check == true);
     assert(cfg.post.max_fill_gap == 48);
-    assert(cfg.post.shadow_reclass == true);
 
     // 2. Verify that PostProcessor::fill_holes without ExperimentalInpaintScope
-    // natively executes shadow reclassification when cfg.post.shadow_reclass is true!
+    // natively executes shadow reclassification when cfg.mode == QualityMode::QualityV2!
     const int w = 32;
     const int h = 1;
     PipelineBuffers buf;
@@ -408,10 +407,17 @@ static void test_quality_v2_preset_and_native_inpaint() {
     PipelineBuffers test_buf = buf;
     post.fill_holes(cfg, test_buf);
 
-    // Under shadow_reclass (native), holes should be filled with min(dl, dr) = 10.0f
+    // Under QualityV2 (native shadow_reclass), holes should be filled with min(dl, dr) = 10.0f
     for (int x = 10; x <= 15; ++x) {
         assert(test_buf.disparity.at(x, 0) == 10.0f);
     }
+
+    // 3. Verify that Balanced mode (legacy) does linear interpolation (not min)
+    PipelineConfig legacy_cfg = PipelineConfig::from_mode(QualityMode::Balanced, 64);
+    PipelineBuffers legacy_buf = buf;
+    post.fill_holes(legacy_cfg, legacy_buf);
+    // Linear interp: d(10) = 10 + 30 * 1/7 ~= 14.28f != 10.0f
+    assert(legacy_buf.disparity.at(10, 0) > 12.0f);
 
     std::cout << "[PASS] test_quality_v2_preset_and_native_inpaint\n";
 }

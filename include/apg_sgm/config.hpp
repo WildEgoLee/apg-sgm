@@ -63,7 +63,6 @@ struct PostParams {
     int lr_max_diff = 1;
     int median_radius = 1;
     int max_fill_gap = 32;
-    bool shadow_reclass = false;
 };
 
 enum class HierarchicalFallback {

@@ -59,7 +59,6 @@ PipelineConfig PipelineConfig::from_mode(QualityMode mode, int max_disparity) {
         c.post.subpixel = true;
         c.post.lr_check = true;
         c.post.max_fill_gap = 48;
-        c.post.shadow_reclass = true;
         break;
     }
     return c;
