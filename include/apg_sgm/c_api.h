@@ -28,6 +28,7 @@ extern "C" {
 #define APG_QUALITY_FAST 0
 #define APG_QUALITY_BALANCED 1
 #define APG_QUALITY_HIGH_QUALITY 2
+#define APG_QUALITY_V2 3
 
 /* Memory Policy */
 #define APG_MEMORY_RELEASE_PER_FRAME 0

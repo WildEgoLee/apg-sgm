@@ -43,6 +43,8 @@ apg_session_t apg_session_create_ex(const apg_session_options_t* options) {
             qm = apg::QualityMode::Fast;
         } else if (options->quality_mode == APG_QUALITY_HIGH_QUALITY) {
             qm = apg::QualityMode::HighQuality;
+        } else if (options->quality_mode == APG_QUALITY_V2) {
+            qm = apg::QualityMode::QualityV2;
         }
 
         int max_disp = options->max_disparity > options->min_disparity ? options->max_disparity : 128;

@@ -40,8 +40,33 @@ PipelineConfig PipelineConfig::from_mode(QualityMode mode, int max_disparity) {
         c.refine.enable = true;
         c.refine.iterations = 3;
         break;
+    case QualityMode::QualityV2:
+        c.cost.use_ad = true;
+        c.cost.use_grad = true;
+        c.aggregation.enable = true;
+        c.aggregation.iterations = 1;
+        c.sgm.paths = PathType::Path4;
+        c.sgm.adaptive_penalties = true;
+        c.prior.enable = true;
+        c.refine.enable = true;
+        c.refine.iterations = 3;
+        c.hierarchical.enable = true;
+        c.hierarchical.radius = 4;
+        c.hierarchical.scale = 2;
+        c.hierarchical.fallback = HierarchicalFallback::NearestValid;
+        c.hierarchical.coarse_cross_agg = true;
+        c.hierarchical.coarse_fill_holes = true;
+        c.post.subpixel = true;
+        c.post.lr_check = true;
+        c.post.max_fill_gap = 48;
+        c.post.shadow_reclass = true;
+        break;
     }
     return c;
+}
+
+PipelineConfig PipelineConfig::quality_v2(int max_disparity) {
+    return from_mode(QualityMode::QualityV2, max_disparity);
 }
 
 } // namespace apg

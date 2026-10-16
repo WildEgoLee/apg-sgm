@@ -11,7 +11,8 @@ namespace apg {
 enum class QualityMode {
     Fast,
     Balanced,
-    HighQuality
+    HighQuality,
+    QualityV2
 };
 
 enum class VolumeBackend {

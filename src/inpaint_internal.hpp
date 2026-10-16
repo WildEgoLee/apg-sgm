@@ -174,6 +174,7 @@ public:
 
     ~ExperimentalInpaintScope();
 
+    static bool is_active();
     static InpaintMethod current_method();
     static int current_max_gap();
     static bool is_telemetry_enabled();

@@ -44,6 +44,7 @@ def test_metadata_and_enums():
     assert apg.QualityMode.Fast is not None
     assert apg.QualityMode.Balanced is not None
     assert apg.QualityMode.HighQuality is not None
+    assert apg.QualityMode.QualityV2 is not None
 
     assert apg.VolumeBackend.Auto is not None
     assert apg.VolumeBackend.Dense is not None
@@ -54,6 +55,24 @@ def test_metadata_and_enums():
 
     assert apg.StatusCode.Ok is not None
     assert apg.StatusCode.AllocationFailure is not None
+
+
+def test_quality_v2_configuration():
+    session = apg.StereoSession(mode="quality_v2")
+    assert session.hierarchical_enabled is True
+    assert session.hierarchical_radius == 4
+    assert session.shadow_reclass_enabled is True
+    assert session.max_fill_gap == 48
+
+    left, right = make_synthetic_pair(64, 48)
+    res = session.process(left, right)
+    assert not res.empty
+    assert res.disparity.shape == (48, 64)
+
+    # Test explicit override of inpaint parameters
+    custom_session = apg.StereoSession(mode="balanced", shadow_reclass=True, inpaint_gap=64)
+    assert custom_session.shadow_reclass_enabled is True
+    assert custom_session.max_fill_gap == 64
 
 
 def test_session_lifecycle_and_default_release_per_frame():

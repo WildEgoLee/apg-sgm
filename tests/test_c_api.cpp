@@ -141,8 +141,14 @@ static void test_c_api_create_ex() {
 
     apg_session_t session = apg_session_create_ex(&opts);
     assert(session != nullptr);
-
     apg_session_destroy(session);
+
+    // Test QualityV2 mode
+    opts.quality_mode = APG_QUALITY_V2;
+    apg_session_t session_v2 = apg_session_create_ex(&opts);
+    assert(session_v2 != nullptr);
+    apg_session_destroy(session_v2);
+
     std::cout << "[PASS] test_c_api_create_ex\n";
 }
 
