@@ -5,6 +5,7 @@
 #include "apg_sgm/pipeline_stats.hpp"
 #include "hierarchical_stereo.hpp"
 #include "subpixel_estimator.hpp"
+#include "inpaint_internal.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -145,6 +146,9 @@ int main(int argc, char** argv) {
     float subpixel_param = 0.0f;
     bool subpixel_param_set = false;
     bool subpixel_telem = false;
+    apg::InpaintMethod inpaint_method = apg::InpaintMethod::Legacy;
+    int inpaint_gap = 32;
+    bool inpaint_telem = false;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -201,6 +205,17 @@ int main(int argc, char** argv) {
             subpixel_param_set = true;
         } else if (arg == "--subpixel-telem") {
             subpixel_telem = true;
+        } else if (arg == "--inpaint-method" && i + 1 < argc) {
+            std::string mstr = argv[++i];
+            if (!apg::parse_inpaint_method(mstr, inpaint_method)) {
+                std::cerr << "Error: invalid inpaint method '" << mstr
+                          << "'. Options: legacy, disparity_order, shadow_reclass, edge_aware\n";
+                return 1;
+            }
+        } else if (arg == "--inpaint-gap" && i + 1 < argc) {
+            inpaint_gap = std::max(1, std::stoi(argv[++i]));
+        } else if (arg == "--inpaint-telem") {
+            inpaint_telem = true;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: apg-benchmark [options]\n"
                       << "Options:\n"
@@ -236,6 +251,10 @@ int main(int argc, char** argv) {
                       << "  --subpixel-param <float>\n"
                       << "                        Method-specific parameter (curvature threshold, confidence threshold, or lambda)\n"
                       << "  --subpixel-telem      Collect and display subpixel diagnostics telemetry\n"
+                      << "  --inpaint-method <legacy|disparity_order|shadow_reclass|edge_aware>\n"
+                      << "                        Inpainting / hole filling method (default: legacy)\n"
+                      << "  --inpaint-gap <N>     Maximum gap distance for hole search (default: 32)\n"
+                      << "  --inpaint-telem       Collect and display inpainting attribution telemetry\n"
                       << "  --help, -h            Show this help message\n";
             return 0;
         } else {
@@ -427,7 +446,11 @@ int main(int argc, char** argv) {
         << "avg_states_per_pixel,coarse_valid_ratio,fallback_pixel_ratio,full_range_pixel_ratio,"
         << "subpixel_method,subpixel_param,subpixel_candidate_px,subpixel_applied_px,subpixel_applied_ratio,"
         << "subpixel_degenerate_count,subpixel_clamped_count,subpixel_clamped_ratio,subpixel_neg_curv_count,"
-        << "subpixel_mean_abs_delta,subpixel_p50_abs_delta,subpixel_p95_abs_delta\n";
+        << "subpixel_mean_abs_delta,subpixel_p50_abs_delta,subpixel_p95_abs_delta,"
+        << "inpaint_method,inpaint_gap,inpaint_total_holes,inpaint_filled_holes,inpaint_fill_ratio,"
+        << "inpaint_occ_two_sided,inpaint_occ_left_only,inpaint_occ_right_only,inpaint_occ_unfilled,"
+        << "inpaint_mism_two_sided,inpaint_mism_left_only,inpaint_mism_right_only,inpaint_mism_unfilled,"
+        << "inpaint_reclassified_shadow,inpaint_hit_max_gap\n";
 
     std::cout << "Starting benchmark: " << cases.size() << " cases, "
               << ablation_ids.size() << " ablation configs, "
@@ -480,6 +503,8 @@ int main(int argc, char** argv) {
                 cfg.hierarchical.expanded_radius = hierarchical_expanded_radius;
             }
 
+            cfg.post.max_fill_gap = inpaint_gap;
+
             const bool use_packed = cfg.resolves_to_packed();
             const std::string backend_str = use_packed ? "packed" : "dense";
 
@@ -490,6 +515,7 @@ int main(int argc, char** argv) {
 
             apg::ExperimentalHierarchicalScope hscope(cfg.hierarchical);
             apg::ExperimentalSubpixelScope sp_scope(subpixel_method, subpixel_param, subpixel_telem);
+            apg::ExperimentalInpaintScope ip_scope(inpaint_method, inpaint_gap, inpaint_telem);
 
             // Warmup runs
             for (int r = 0; r < warmup_runs; ++r) {
@@ -501,6 +527,9 @@ int main(int argc, char** argv) {
 
             if (subpixel_telem) {
                 apg::ExperimentalSubpixelScope::current_telemetry().reset();
+            }
+            if (inpaint_telem) {
+                apg::ExperimentalInpaintScope::current_telemetry().reset();
             }
 
             // Timed runs
@@ -618,6 +647,40 @@ int main(int argc, char** argv) {
                           << " | Mean|d|: " << std::setprecision(3) << sp_telem.mean_abs_delta()
                           << " | p50: " << std::setprecision(3) << sp_telem.p50_abs_delta()
                           << " | p95: " << std::setprecision(3) << sp_telem.p95_abs_delta()
+                          << "]\n";
+            }
+
+            apg::InpaintTelemetry ip_telem;
+            if (inpaint_telem) {
+                ip_telem = apg::ExperimentalInpaintScope::current_telemetry();
+                if (repeat_runs > 1) {
+                    ip_telem.total_invalid_pixels /= repeat_runs;
+                    ip_telem.classified_occ_pixels /= repeat_runs;
+                    ip_telem.classified_mismatch_pixels /= repeat_runs;
+                    ip_telem.hit_max_gap_pixels /= repeat_runs;
+                    ip_telem.reclassified_shadow_pixels /= repeat_runs;
+                    for (int ri = 0; ri < 11; ++ri) {
+                        ip_telem.route_counts[ri] /= repeat_runs;
+                    }
+                    ip_telem.invalid_runs_count /= repeat_runs;
+                    ip_telem.invalid_runs_truncated /= repeat_runs;
+                    for (int bi = 0; bi < 10; ++bi) {
+                        ip_telem.run_length_buckets[bi] /= repeat_runs;
+                    }
+                }
+            }
+
+            if (inpaint_telem) {
+                std::cout << "  [Inpaint " << apg::inpaint_method_to_string(inpaint_method)
+                          << "(gap=" << inpaint_gap << ")"
+                          << " | Holes: " << ip_telem.total_invalid_pixels
+                          << " | Filled: " << ip_telem.total_filled_pixels() << " (" << std::fixed << std::setprecision(1) << (ip_telem.fill_ratio() * 100.0) << "%)"
+                          << " | Occ: " << ip_telem.classified_occ_pixels << " (Both: " << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccBothMin)]
+                          << ", L: " << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccLeftOnly)]
+                          << ", R: " << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccRightOnly)] << ")"
+                          << " | Mism: " << ip_telem.classified_mismatch_pixels << " (Lerp: " << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::MismatchLerp)] << ")"
+                          << " | HitGap: " << ip_telem.hit_max_gap_pixels
+                          << " | ReclassShadow: " << ip_telem.reclassified_shadow_pixels
                           << "]\n";
             }
 
@@ -807,7 +870,22 @@ int main(int argc, char** argv) {
                 << sp_telem.negative_curvature_count << ","
                 << sp_telem.mean_abs_delta() << ","
                 << sp_telem.p50_abs_delta() << ","
-                << sp_telem.p95_abs_delta() << "\n";
+                << sp_telem.p95_abs_delta() << ","
+                << apg::inpaint_method_to_string(inpaint_method) << ","
+                << inpaint_gap << ","
+                << ip_telem.total_invalid_pixels << ","
+                << ip_telem.total_filled_pixels() << ","
+                << ip_telem.fill_ratio() << ","
+                << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccBothMin)] << ","
+                << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccLeftOnly)] << ","
+                << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::OccRightOnly)] << ","
+                << (ip_telem.classified_occ_pixels > (ip_telem.route_counts[1]+ip_telem.route_counts[2]+ip_telem.route_counts[3]) ? ip_telem.classified_occ_pixels - (ip_telem.route_counts[1]+ip_telem.route_counts[2]+ip_telem.route_counts[3]) : 0) << ","
+                << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::MismatchLerp)] << ","
+                << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::MismatchLeftOnly)] << ","
+                << ip_telem.route_counts[static_cast<size_t>(apg::FillRoute::MismatchRightOnly)] << ","
+                << (ip_telem.classified_mismatch_pixels > (ip_telem.route_counts[4]+ip_telem.route_counts[5]+ip_telem.route_counts[6]+ip_telem.route_counts[7]+ip_telem.route_counts[8]+ip_telem.route_counts[9]) ? ip_telem.classified_mismatch_pixels - (ip_telem.route_counts[4]+ip_telem.route_counts[5]+ip_telem.route_counts[6]+ip_telem.route_counts[7]+ip_telem.route_counts[8]+ip_telem.route_counts[9]) : 0) << ","
+                << ip_telem.reclassified_shadow_pixels << ","
+                << ip_telem.hit_max_gap_pixels << "\n";
             csv.flush();
 
             // Save disparity maps if requested

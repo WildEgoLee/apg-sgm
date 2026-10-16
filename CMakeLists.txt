@@ -37,6 +37,7 @@ add_library(apg_sgm
     src/c_api.cpp
     src/hierarchical_stereo.cpp
     src/subpixel_estimator.cpp
+    src/inpaint_internal.cpp
 )
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -159,6 +160,11 @@ if(APG_SGM_BUILD_TESTS)
     target_include_directories(test_subpixel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(test_subpixel PRIVATE apg_sgm)
     add_test(NAME subpixel COMMAND test_subpixel)
+
+    add_executable(test_inpaint tests/test_inpaint.cpp)
+    target_include_directories(test_inpaint PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_inpaint PRIVATE apg_sgm)
+    add_test(NAME inpaint COMMAND test_inpaint)
 
     add_executable(c_api_smoke tests/c_api_smoke.c)
     target_link_libraries(c_api_smoke PRIVATE apg_sgm)

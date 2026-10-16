@@ -13,6 +13,8 @@ benchmarks/data/
 results/*.csv
 results/hierarchical_study/
 results/p5_5_study/
+results/p5_6_study/
+results/disp_*/
 !results/.gitkeep
 .DS_Store
 *.pyd
