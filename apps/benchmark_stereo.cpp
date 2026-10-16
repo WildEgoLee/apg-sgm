@@ -347,6 +347,19 @@ int main(int argc, char** argv) {
                 cfg_dense.volume_backend = apg::VolumeBackend::Dense;
                 if (num_threads > 0) cfg_dense.num_threads = num_threads;
 
+                if (hierarchical_enable) {
+                    cfg_dense.hierarchical.enable = true;
+                    cfg_dense.hierarchical.radius = hierarchical_radius;
+                    cfg_dense.hierarchical.fallback = hierarchical_fallback;
+                    cfg_dense.hierarchical.coarse_cross_agg = hierarchical_coarse_cross;
+                    cfg_dense.hierarchical.coarse_fill_holes = hierarchical_coarse_fill;
+                    cfg_dense.hierarchical.adaptive_radius = hierarchical_adaptive;
+                    cfg_dense.hierarchical.confidence_threshold = hierarchical_confidence_threshold;
+                    cfg_dense.hierarchical.expanded_radius = hierarchical_expanded_radius;
+                }
+
+                cfg_dense.post.max_fill_gap = inpaint_gap;
+
                 apg::PipelineConfig cfg_packed = cfg_dense;
                 cfg_packed.volume_backend = apg::VolumeBackend::Packed;
 
@@ -355,6 +368,10 @@ int main(int argc, char** argv) {
 
                 apg::PipelineBuffers bufs_dense;
                 apg::PipelineBuffers bufs_packed;
+
+                apg::ExperimentalHierarchicalScope hscope(cfg_dense.hierarchical);
+                apg::ExperimentalSubpixelScope sp_scope(subpixel_method, subpixel_param, false);
+                apg::ExperimentalInpaintScope ip_scope(inpaint_method, inpaint_gap, false);
 
                 if (!matcher_dense.compute(left_img, right_img, bufs_dense, nullptr)) {
                     std::cerr << "Dense failed on case " << c.name << ": "

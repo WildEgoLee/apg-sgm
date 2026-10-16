@@ -52,7 +52,7 @@ Unchanged production logic (`max_fill_gap = 32`). Retains fast-path bypass for b
 
 ### 2. Candidate B: Expanded-Gap Baseline Control (`max_fill_gap = 48, 64`)
 Evaluates expanding the legacy hole search budget without altering inpainting logic, isolating whether Candidate C's gains stem simply from wider gap reach.
-- *Finding*: Merely widening `max_fill_gap` on the legacy baseline yields only +0.14% (Lane L) and +0.98% (Lane H) Occ Bad2 relative improvement, with regression in 5 out of 15 scenes on Lane L (10/15 non-regr). It decisively fails the $\ge 5.0\%$ gate. This confirms that gap expansion alone does not resolve occlusion boundary errors—the shadow reclassification heuristic is the true mechanism driving quality gains. **NO-GO**.
+- *Finding*: Merely widening `max_fill_gap` on the legacy baseline yields only +0.14% (Lane L) and +0.98% (Lane H) Occ Bad2 relative improvement, with regression in 5 out of 15 scenes on Lane L (10/15 non-regr). It decisively fails the $\ge 5.0\%$ gate. Within the studied ablations, shadow reclassification accounts for the dominant observed quality gain beyond expanded-gap Legacy filling. **NO-GO**.
 
 ### 3. Candidate C: Shadow-Run Reclassification
 - Identifies invalid pixels classified as `Mismatch` where the bounding endpoints exhibit a significant disparity step ($|d_R - d_L| \ge 4.0$ px).
@@ -173,3 +173,4 @@ To guarantee zero regression and 100% bit-exact backward compatibility on the pr
 | **Safety Gate 5** | Interleaved runtime overhead $\le 5.0\%$ | **+0.03%** | **-0.78%** | **PASS** |
 | **Robustness** | Occ Bad2 non-regressing on $\ge 12/15$ scenes | **15/15** | **15/15** | **PASS** |
 | **Compatibility** | Default path hash invariance vs `main` | **15/15 byte-identical** | **15/15 byte-identical** | **PASS** |
+| **Backend Parity** | Candidate C Dense vs Packed bit-exact | **15/15 bit-exact** | **15/15 bit-exact** | **PASS** |
