@@ -109,6 +109,7 @@ struct PipelineConfig {
     HierarchicalConfig hierarchical;
 
     static PipelineConfig from_mode(QualityMode mode, int max_disparity = 128);
+    static PipelineConfig quality_v2(int max_disparity = 128);
 };
 
 } // namespace apg

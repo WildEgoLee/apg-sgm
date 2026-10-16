@@ -10,7 +10,7 @@ using namespace apg;
 static void usage(const char* argv0) {
     std::cerr
         << "Usage: " << argv0
-        << " left.pgm right.pgm out.pgm [--mode fast|balanced|high] [--disp-max N] [--threads N]\n"
+        << " left.pgm right.pgm out.pgm [--mode fast|balanced|high|quality_v2] [--disp-max N] [--threads N]\n"
         << "                          [--backend auto|dense|packed] [--packed] [--stats] [--stats-json]\n"
         << "Inputs: binary PGM (P5) or PPM (P6). Images must already be rectified.\n";
 }
@@ -18,6 +18,7 @@ static void usage(const char* argv0) {
 static QualityMode parse_mode(const std::string& s) {
     if (s == "fast") return QualityMode::Fast;
     if (s == "high" || s == "hq" || s == "highquality") return QualityMode::HighQuality;
+    if (s == "quality_v2" || s == "v2" || s == "qualityv2") return QualityMode::QualityV2;
     return QualityMode::Balanced;
 }
 

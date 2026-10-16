@@ -42,10 +42,14 @@ void PostProcessor::left_right_check(const PipelineConfig& cfg, PipelineBuffers&
 void PostProcessor::fill_holes(const PipelineConfig& cfg, PipelineBuffers& buf) const {
     const int w = buf.disparity.width();
     const int h = buf.disparity.height();
-    const InpaintMethod method = ExperimentalInpaintScope::current_method();
-    const bool telem_enabled = ExperimentalInpaintScope::is_telemetry_enabled();
-    const int scope_gap = ExperimentalInpaintScope::current_max_gap();
-    const int max_gap = (method == InpaintMethod::Legacy && scope_gap == 32) ? cfg.post.max_fill_gap : scope_gap;
+    const bool scope_active = ExperimentalInpaintScope::is_active();
+    const InpaintMethod method = scope_active
+        ? ExperimentalInpaintScope::current_method()
+        : ((cfg.mode == QualityMode::QualityV2) ? InpaintMethod::ShadowReclass : InpaintMethod::Legacy);
+    const bool telem_enabled = scope_active && ExperimentalInpaintScope::is_telemetry_enabled();
+    const int max_gap = scope_active
+        ? ExperimentalInpaintScope::current_max_gap()
+        : cfg.post.max_fill_gap;
     const bool is_fast_legacy = (method == InpaintMethod::Legacy && !telem_enabled && max_gap == cfg.post.max_fill_gap);
 
     Image32f out = buf.disparity;

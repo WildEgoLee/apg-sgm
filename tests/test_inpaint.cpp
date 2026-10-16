@@ -370,6 +370,58 @@ static void test_candidate_c_multithread_parity() {
     std::cout << "[PASS] test_candidate_c_multithread_parity\n";
 }
 
+static void test_quality_v2_preset_and_native_inpaint() {
+    std::cout << "Testing QualityV2 preset and native inpainting without scope...\n";
+
+    // 1. Verify PipelineConfig::quality_v2 preset fields
+    PipelineConfig cfg = PipelineConfig::quality_v2(64);
+    assert(cfg.mode == QualityMode::QualityV2);
+    assert(cfg.max_disparity == 64);
+    assert(cfg.hierarchical.enable == true);
+    assert(cfg.hierarchical.radius == 4);
+    assert(cfg.hierarchical.scale == 2);
+    assert(cfg.prior.enable == true);
+    assert(cfg.refine.enable == true);
+    assert(cfg.post.subpixel == true);
+    assert(cfg.post.lr_check == true);
+    assert(cfg.post.max_fill_gap == 48);
+
+    // 2. Verify that PostProcessor::fill_holes without ExperimentalInpaintScope
+    // natively executes shadow reclassification when cfg.mode == QualityMode::QualityV2!
+    const int w = 32;
+    const int h = 1;
+    PipelineBuffers buf;
+    buf.disparity = Image32f(w, h, 10.0f);
+    buf.invalid_reason = Image8u1(w, h, static_cast<uint8_t>(InvalidReason::Valid));
+    buf.left_gray = Image8(w, h, 1);
+
+    // Create a shadow step mismatch hole: dl = 10, dr = 40 (|dr - dl| = 30 >= 4.0)
+    buf.disparity.at(9, 0) = 10.0f;
+    for (int x = 10; x <= 15; ++x) {
+        buf.disparity.at(x, 0) = -1.0f;
+        buf.invalid_reason.at(x, 0) = static_cast<uint8_t>(InvalidReason::Mismatch);
+    }
+    buf.disparity.at(16, 0) = 40.0f;
+
+    PostProcessor post;
+    PipelineBuffers test_buf = buf;
+    post.fill_holes(cfg, test_buf);
+
+    // Under QualityV2 (native shadow_reclass), holes should be filled with min(dl, dr) = 10.0f
+    for (int x = 10; x <= 15; ++x) {
+        assert(test_buf.disparity.at(x, 0) == 10.0f);
+    }
+
+    // 3. Verify that Balanced mode (legacy) does linear interpolation (not min)
+    PipelineConfig legacy_cfg = PipelineConfig::from_mode(QualityMode::Balanced, 64);
+    PipelineBuffers legacy_buf = buf;
+    post.fill_holes(legacy_cfg, legacy_buf);
+    // Linear interp: d(10) = 10 + 30 * 1/7 ~= 14.28f != 10.0f
+    assert(legacy_buf.disparity.at(10, 0) > 12.0f);
+
+    std::cout << "[PASS] test_quality_v2_preset_and_native_inpaint\n";
+}
+
 int main() {
     std::cout << std::unitbuf;
     test_synthetic_step_edge();
@@ -378,6 +430,7 @@ int main() {
     test_shadow_reclass_logic();
     test_mismatch_unfilled_telemetry_accounting();
     test_candidate_c_multithread_parity();
+    test_quality_v2_preset_and_native_inpaint();
     std::cout << "All inpainting and occlusion refinement unit tests passed successfully.\n";
     return 0;
 }

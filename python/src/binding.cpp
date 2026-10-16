@@ -158,7 +158,8 @@ public:
                     const py::object& hierarchical_fallback_arg,
                     bool adaptive_radius,
                     float confidence_threshold,
-                    int expanded_radius) {
+                    int expanded_radius,
+                    int inpaint_gap) {
         apg::QualityMode qm = apg::QualityMode::Balanced;
         if (!mode_arg.is_none()) {
             if (py::isinstance<py::str>(mode_arg)) {
@@ -167,7 +168,8 @@ public:
                 if (s == "fast") qm = apg::QualityMode::Fast;
                 else if (s == "balanced") qm = apg::QualityMode::Balanced;
                 else if (s == "high_quality" || s == "hq" || s == "highquality") qm = apg::QualityMode::HighQuality;
-                else throw py::value_error("Unrecognized mode '" + s + "'. Valid: 'fast', 'balanced', 'high_quality'");
+                else if (s == "quality_v2" || s == "v2" || s == "qualityv2") qm = apg::QualityMode::QualityV2;
+                else throw py::value_error("Unrecognized mode '" + s + "'. Valid: 'fast', 'balanced', 'high_quality', 'quality_v2'");
             } else {
                 qm = mode_arg.cast<apg::QualityMode>();
             }
@@ -220,6 +222,10 @@ public:
                     cfg.hierarchical.fallback = hierarchical_fallback_arg.cast<apg::HierarchicalFallback>();
                 }
             }
+        }
+
+        if (inpaint_gap > 0) {
+            cfg.post.max_fill_gap = inpaint_gap;
         }
 
         apg::ExecutionOptions opt;
@@ -331,6 +337,14 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         return session_->config().hierarchical.adaptive_radius;
     }
+    bool shadow_reclass_enabled() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->config().mode == apg::QualityMode::QualityV2;
+    }
+    int max_fill_gap() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return session_->config().post.max_fill_gap;
+    }
 
     std::string repr() {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -346,6 +360,9 @@ public:
                     << session_->config().hierarchical.confidence_threshold;
             }
             oss << ")";
+        }
+        if (session_->config().mode == apg::QualityMode::QualityV2) {
+            oss << " shadow_reclass=True (gap=" << session_->config().post.max_fill_gap << ")";
         }
         oss << ">";
         return oss.str();
@@ -366,6 +383,7 @@ PYBIND11_MODULE(_core, m) {
         .value("Fast", apg::QualityMode::Fast)
         .value("Balanced", apg::QualityMode::Balanced)
         .value("HighQuality", apg::QualityMode::HighQuality)
+        .value("QualityV2", apg::QualityMode::QualityV2)
         .export_values();
 
     // VolumeBackend Enum
@@ -532,7 +550,7 @@ PYBIND11_MODULE(_core, m) {
 
     // StereoSession Class
     py::class_<PyStereoSession>(m, "StereoSession", "Stateful streaming stereo matcher session")
-        .def(py::init<py::object, int, int, int, py::object, py::object, size_t, bool, int, py::object, bool, float, int>(),
+        .def(py::init<py::object, int, int, int, py::object, py::object, size_t, bool, int, py::object, bool, float, int, int>(),
              py::arg("mode") = "balanced",
              py::arg("threads") = 0,
              py::arg("max_disparity") = 128,
@@ -546,7 +564,8 @@ PYBIND11_MODULE(_core, m) {
              py::arg("adaptive_radius") = false,
              py::arg("confidence_threshold") = 0.5f,
              py::arg("expanded_radius") = 8,
-             "Initialize StereoSession with algorithm mode, disparity bounds, execution options, and hierarchical settings.")
+             py::arg("inpaint_gap") = 0,
+             "Initialize StereoSession with algorithm mode, disparity bounds, execution options, hierarchical, and inpaint settings.")
         .def("process", &PyStereoSession::process, py::arg("left"), py::arg("right"),
              "Process a pair of left and right images (uint8 ndarrays). Returns StereoResult.")
         .def("compute", &PyStereoSession::process, py::arg("left"), py::arg("right"),
@@ -560,5 +579,7 @@ PYBIND11_MODULE(_core, m) {
         .def_property_readonly("hierarchical_enabled", &PyStereoSession::hierarchical_enabled)
         .def_property_readonly("hierarchical_radius", &PyStereoSession::hierarchical_radius)
         .def_property_readonly("adaptive_radius", &PyStereoSession::adaptive_radius)
+        .def_property_readonly("shadow_reclass_enabled", &PyStereoSession::shadow_reclass_enabled)
+        .def_property_readonly("max_fill_gap", &PyStereoSession::max_fill_gap)
         .def("__repr__", &PyStereoSession::repr);
 }

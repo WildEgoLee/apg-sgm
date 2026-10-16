@@ -216,12 +216,26 @@ int main(int argc, char** argv) {
             inpaint_gap = std::max(1, std::stoi(argv[++i]));
         } else if (arg == "--inpaint-telem") {
             inpaint_telem = true;
+        } else if (arg == "--preset" && i + 1 < argc) {
+            std::string pstr = argv[++i];
+            if (pstr == "quality_v2" || pstr == "v2" || pstr == "QualityV2") {
+                ablation_arg = "F";
+                hierarchical_enable = true;
+                hierarchical_radius = 4;
+                hierarchical_fallback = apg::HierarchicalFallback::NearestValid;
+                inpaint_method = apg::InpaintMethod::ShadowReclass;
+                inpaint_gap = 48;
+            } else {
+                std::cerr << "Error: invalid preset '" << pstr << "'. Options: quality_v2\n";
+                return 1;
+            }
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: apg-benchmark [options]\n"
                       << "Options:\n"
                       << "  --manifest <path>     Path to dataset manifest file (required)\n"
                       << "  --ablation, --modes <id|all>\n"
                       << "                        Ablation experiment: A, B, C, D, E, F, G, or all (default: all)\n"
+                      << "  --preset <quality_v2> Preset configuration (e.g. quality_v2: Mode F + Hierarchical R=4 + Shadow Reclass gap=48)\n"
                       << "  --output <path>       Output CSV file path (default: results/ablation.csv)\n"
                       << "  --save_disp <dir>     Optional directory to save output disparity maps\n"
                       << "  --warmup <N>          Warmup runs before timing (default: 2)\n"

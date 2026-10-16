@@ -5,6 +5,7 @@ namespace apg {
 namespace {
 
 struct ScopeState {
+    int active_depth = 0;
     InpaintMethod method = InpaintMethod::Legacy;
     int max_gap = 32;
     bool telemetry_enabled = false;
@@ -14,6 +15,10 @@ struct ScopeState {
 thread_local ScopeState s_inpaint_state;
 
 } // namespace
+
+bool ExperimentalInpaintScope::is_active() {
+    return s_inpaint_state.active_depth > 0;
+}
 
 InpaintMethod ExperimentalInpaintScope::current_method() {
     return s_inpaint_state.method;
@@ -40,6 +45,7 @@ ExperimentalInpaintScope::ExperimentalInpaintScope(
     prev_max_gap_ = s_inpaint_state.max_gap;
     prev_telem_enabled_ = s_inpaint_state.telemetry_enabled;
 
+    s_inpaint_state.active_depth++;
     s_inpaint_state.method = method;
     s_inpaint_state.max_gap = (max_gap > 0) ? max_gap : 32;
     s_inpaint_state.telemetry_enabled = collect_telemetry;
@@ -49,6 +55,9 @@ ExperimentalInpaintScope::ExperimentalInpaintScope(
 }
 
 ExperimentalInpaintScope::~ExperimentalInpaintScope() {
+    if (s_inpaint_state.active_depth > 0) {
+        s_inpaint_state.active_depth--;
+    }
     s_inpaint_state.method = prev_method_;
     s_inpaint_state.max_gap = prev_max_gap_;
     s_inpaint_state.telemetry_enabled = prev_telem_enabled_;
